@@ -1,151 +1,188 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Seed GitHub issues from backlog markdown (US lines).
-# Requires: gh CLI authenticated on target repository.
+# Seed GitHub issues from backlog markdown.
+# Extrait user story, acceptance criteria et scenario EPIC depuis le backlog.
+# Requires: gh CLI authenticated, python3 available.
+#
+# Usage:
+#   bash seed_github_issues_from_backlog.sh <backlog.md> <dry-run|apply|update> [owner/repo]
+#
+# Modes:
+#   dry-run  - print plans only, no GitHub calls
+#   apply    - create new issues (skip existing)
+#   update   - update body of existing issues; create if missing
 
 BACKLOG_FILE="${1:-DOCS/backlog_epic_us_v1.md}"
-MODE="${2:-dry-run}" # dry-run | apply
-TARGET_REPO="${3:-}"   # optional: owner/repo
+MODE="${2:-dry-run}"
+TARGET_REPO="${3:-}"
 
 if [[ ! -f "$BACKLOG_FILE" ]]; then
-  echo "ERROR: backlog file not found: $BACKLOG_FILE" >&2
-  exit 1
+  echo "ERROR: backlog file not found: $BACKLOG_FILE" >&2; exit 1
 fi
-
 if ! command -v gh >/dev/null 2>&1; then
-  echo "ERROR: gh CLI not found. Install GitHub CLI first." >&2
-  exit 1
+  echo "ERROR: gh CLI not found." >&2; exit 1
 fi
-
-if [[ "$MODE" != "dry-run" && "$MODE" != "apply" ]]; then
-  echo "ERROR: mode must be dry-run or apply" >&2
-  exit 1
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "ERROR: python3 not found." >&2; exit 1
+fi
+if [[ "$MODE" != "dry-run" && "$MODE" != "apply" && "$MODE" != "update" ]]; then
+  echo "ERROR: mode must be dry-run | apply | update" >&2; exit 1
 fi
 
 repo_full_name="$TARGET_REPO"
 if [[ -z "$repo_full_name" ]]; then
   repo_full_name="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || true)"
 fi
-
-if [[ "$MODE" == "apply" && -z "$repo_full_name" ]]; then
-  echo "ERROR: apply mode requires a repository context." >&2
-  echo "Hint: run inside a cloned repo or pass owner/repo as 3rd argument." >&2
-  exit 1
+if [[ "$MODE" != "dry-run" && -z "$repo_full_name" ]]; then
+  echo "ERROR: apply/update mode requires a repository context." >&2; exit 1
 fi
 
-issue_exists() {
-  local title="$1"
-  if [[ -z "$repo_full_name" ]]; then
-    return 1
-  fi
-  local count
-  count="$(gh issue list --repo "$repo_full_name" --state all --search "in:title \"$title\"" --json number -q 'length')"
-  [[ "$count" -gt 0 ]]
-}
+# Python parser: parses backlog, writes body files to WORKDIR,
+# outputs TSV: issue_title<TAB>epic_label<TAB>type_label<TAB>priority_label<TAB>body_path
+WORKDIR="$(mktemp -d /tmp/seed_issues_XXXXX)"
+PYPARSE="$(mktemp /tmp/parse_backlog_XXXXX.py)"
+trap "rm -rf '$WORKDIR' '$PYPARSE'" EXIT
 
-map_type_label() {
-  local us_kind="$1"
-  case "$us_kind" in
-    Socle) echo "type:socle" ;;
-    Interface) echo "type:interface" ;;
-    Delivery) echo "type:delivery" ;;
-    Qualite) echo "type:quality" ;;
-    *) echo "type:other" ;;
-  esac
-}
+python3 - "$PYPARSE" << 'WRITE_PARSER'
+import sys
 
-map_priority_label() {
-  local epic_id="$1"
-  if [[ "$epic_id" -le 2 ]]; then
-    echo "priority:high"
-  elif [[ "$epic_id" -le 6 ]]; then
-    echo "priority:medium"
-  else
-    echo "priority:low"
-  fi
-}
+parser_code = r"""
+import sys, re, os
 
-current_epic=""
-current_epic_id=""
+backlog_path = sys.argv[1]
+workdir      = sys.argv[2]
 
-# The parser expects lines like:
-# - US-5.1 (Socle) - Connecteur SMTP
-while IFS= read -r line; do
-  if [[ "$line" =~ ^##[[:space:]]EPIC-([0-9]+)[[:space:]]-[[:space:]](.+)$ ]]; then
-    current_epic_id="${BASH_REMATCH[1]}"
-    current_epic="${BASH_REMATCH[2]}"
-    continue
-  fi
+with open(backlog_path, encoding="utf-8") as f:
+    lines = f.readlines()
 
-  if [[ "$line" =~ ^-[[:space:]]US-([0-9]+\.[0-9]+)[[:space:]]\(([^\)]+)\)[[:space:]]-[[:space:]](.+)$ ]]; then
-    us_id="${BASH_REMATCH[1]}"
-    us_kind="${BASH_REMATCH[2]}"
-    us_title="${BASH_REMATCH[3]}"
+# Pass 1: scenario lines per EPIC id
+epic_scenarios = {}
+cur_epic = ""
+in_scenario = False
+for line in lines:
+    s = line.rstrip("\n")
+    m = re.match(r"^## EPIC-(\d+)", s)
+    if m:
+        cur_epic = m.group(1); in_scenario = False; continue
+    if re.match(r"^Scenario test humain EPIC-\d+:", s):
+        in_scenario = True; epic_scenarios.setdefault(cur_epic, []); continue
+    if in_scenario:
+        if not s.strip() or s.startswith("##") or s.startswith("Template"):
+            in_scenario = False
+        elif s.strip():
+            epic_scenarios.setdefault(cur_epic, []).append(s.strip())
 
-    epic_from_us="${us_id%%.*}"
-    epic_label="epic:${epic_from_us}"
-    type_label="$(map_type_label "$us_kind")"
-    priority_label="$(map_priority_label "$epic_from_us")"
+# Pass 2: US with story + criteria
+current_epic = {"id": "", "title": ""}
+current_us = None
+in_acceptance = False
+counter = 0
 
-    issue_title="[EPIC-${epic_from_us}][US-${us_id}][${us_kind}] ${us_title}"
+def priority(epic_id):
+    n = int(epic_id)
+    if n <= 2:  return "priority:high"
+    if n <= 6:  return "priority:medium"
+    return "priority:low"
 
-    # Idempotent behavior: skip if title already exists.
-    if issue_exists "$issue_title"; then
-      echo "SKIP existing: $issue_title"
-      continue
-    fi
+def tlabel(kind):
+    return {"Socle":"type:socle","Interface":"type:interface",
+            "Delivery":"type:delivery","Qualite":"type:quality"}.get(kind,"type:other")
 
-    body_file="$(mktemp)"
-    cat > "$body_file" <<EOF
-## 1. Context
-- EPIC: EPIC-${current_epic_id} - ${current_epic}
-- Source backlog: ${BACKLOG_FILE}
-- Problem:
-- User value:
+def emit(us):
+    global counter
+    if not us: return
+    eid      = us["epic_id"]
+    scenario = epic_scenarios.get(eid, [])
+    criteria = us["criteria"] if us["criteria"] else ["1. A definir."]
+    story_ln = f"- **User story:** {us['story']}\n" if us["story"] else ""
+    body = (
+        f"## 1. Contexte\n"
+        f"- **EPIC:** EPIC-{eid} -- {us['epic_title']}\n"
+        f"{story_ln}"
+        f"\n## 2. Scope\n- Inclus dans cette US.\n"
+        f"\n## 3. Hors-scope\n- Non traite dans cette US.\n"
+        f"\n## 4. Acceptance Criteria\n"
+        + "\n".join(criteria) + "\n"
+        + f"\n## 5. Tests\n**Scenario test humain EPIC-{eid}:**\n"
+        + ("\n".join(scenario) if scenario else "Voir backlog.") + "\n"
+        + "\n- Tests auto : unitaires et/ou integration selon scope.\n"
+        + "\n## 6. Definition of Done\n"
+        + "- [ ] Code merge\n- [ ] Tests verts\n- [ ] Documentation mise a jour\n"
+    )
+    body_path = os.path.join(workdir, f"{counter:03d}.body")
+    with open(body_path, "w", encoding="utf-8") as f:
+        f.write(body)
+    issue_title = f"[EPIC-{eid}][US-{us['us_id']}][{us['kind']}] {us['title']}"
+    print(f"{issue_title}\t{'epic:'+eid}\t{tlabel(us['kind'])}\t{priority(eid)}\t{body_path}")
+    counter += 1
 
-## 2. Scope
-- Included:
-- Included:
+for line in lines:
+    s = line.rstrip("\n")
+    m = re.match(r"^## EPIC-(\d+) - (.+)$", s)
+    if m:
+        emit(current_us); current_us = None; in_acceptance = False
+        current_epic = {"id": m.group(1), "title": m.group(2)}; continue
+    if re.match(r"^Scenario test humain|^Template issue|^## Ordre|^## Definition", s):
+        emit(current_us); current_us = None; in_acceptance = False; continue
+    m = re.match(r"^- US-(\d+\.\d+) \(([^)]+)\) - (.+)$", s)
+    if m:
+        emit(current_us); in_acceptance = False
+        current_us = {"epic_id": current_epic["id"], "epic_title": current_epic["title"],
+                      "us_id": m.group(1), "kind": m.group(2), "title": m.group(3),
+                      "story": "", "criteria": []}
+        continue
+    if current_us is None: continue
+    m = re.match(r"^  - (En tant qu?.+)$", s)
+    if m: current_us["story"] = m.group(1); continue
+    if re.match(r"^  - Acceptance:", s): in_acceptance = True; continue
+    if in_acceptance:
+        m = re.match(r"^    (\d+\. .+)$", s)
+        if m: current_us["criteria"].append(m.group(1)); continue
+        if s.strip() and not s.startswith("    "): in_acceptance = False
 
-## 3. Out of Scope
-- Not included:
+emit(current_us)
+"""
 
-## 4. Acceptance Criteria
-1. To be copied from backlog US section.
-2. 
-3. 
+with open(sys.argv[1], "w") as f:
+    f.write(parser_code.lstrip())
+WRITE_PARSER
 
-## 5. Tests
-- Manual test:
-- Automated tests:
+# Process TSV manifest: TITLE<TAB>epic_label<TAB>type_label<TAB>priority_label<TAB>body_path
+while IFS=$'\t' read -r issue_title epic_label type_label priority_label body_file; do
+  echo "PLAN: $issue_title"
+  echo "  labels: $epic_label, $type_label, $priority_label"
 
-## 6. Definition of Done
-- Code merged
-- Relevant tests green
-- Documentation updated
-EOF
-
-    echo "PLAN: $issue_title"
-    echo "  labels: $epic_label, $type_label, $priority_label"
-
-    if [[ "$MODE" == "apply" ]]; then
-      gh issue create \
-        --repo "$repo_full_name" \
-        --title "$issue_title" \
+  if [[ "$MODE" == "apply" ]]; then
+    existing="$(gh issue list --repo "$repo_full_name" --state all \
+      --search "in:title \"$issue_title\"" --json number -q '.[0].number // empty')"
+    if [[ -n "$existing" ]]; then
+      echo "SKIP existing #${existing}: $issue_title"
+    else
+      gh issue create --repo "$repo_full_name" --title "$issue_title" \
         --body-file "$body_file" \
-        --label "$epic_label" \
-        --label "$type_label" \
-        --label "$priority_label" >/dev/null
+        --label "$epic_label" --label "$type_label" --label "$priority_label" >/dev/null
       echo "CREATED: $issue_title"
     fi
 
-    rm -f "$body_file"
+  elif [[ "$MODE" == "update" ]]; then
+    existing="$(gh issue list --repo "$repo_full_name" --state all \
+      --search "in:title \"$issue_title\"" --json number -q '.[0].number // empty')"
+    if [[ -n "$existing" ]]; then
+      gh issue edit "$existing" --repo "$repo_full_name" --body-file "$body_file" >/dev/null
+      echo "UPDATED #${existing}: $issue_title"
+    else
+      gh issue create --repo "$repo_full_name" --title "$issue_title" \
+        --body-file "$body_file" \
+        --label "$epic_label" --label "$type_label" --label "$priority_label" >/dev/null
+      echo "CREATED: $issue_title"
+    fi
   fi
-done < "$BACKLOG_FILE"
+
+done < <(python3 "$PYPARSE" "$BACKLOG_FILE" "$WORKDIR")
 
 if [[ -z "$repo_full_name" ]]; then
-  echo "Done. Mode: $MODE (no repository context, planning output only)."
+  echo "Done. Mode: $MODE (no repository context)."
 else
   echo "Done. Mode: $MODE (repo: $repo_full_name)."
 fi
