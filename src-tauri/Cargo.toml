@@ -1,0 +1,47 @@
+[package]
+name    = "auripostao_tao_seed"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "auripostao_tao_seed_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[[bin]]
+name = "auripostao_tao_seed"
+path = "src/main.rs"
+
+[dependencies]
+# Tauri
+tauri         = { version = "2", features = [] }
+tauri-build   = { version = "2", build-dependencies = true }
+
+# Config: load + merge TOML layers
+config        = "0.14"
+serde         = { version = "1", features = ["derive"] }
+toml          = "0.8"
+
+# Logging
+tracing            = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-appender   = "0.2"
+uuid               = { version = "1", features = ["v4"] }
+
+# Error handling
+thiserror     = "1"
+anyhow        = "1"
+
+# Paths and filesystem
+dirs          = "5"
+
+# Serialization
+serde_json    = "1"
+
+[dev-dependencies]
+tempfile      = "3"
+
+[profile.release]
+opt-level  = 3
+lto        = true
+strip      = true
+panic      = "abort"

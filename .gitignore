@@ -1,0 +1,26 @@
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+
+# Build/runtime
+logs/
+.tmp/
+reports/
+*.sqlite3
+*.db
+
+# Node/Tauri
+node_modules/
+dist/
+
+# Editors
+.vscode/
+.idea/
+
+# docs
+# DOCS/
