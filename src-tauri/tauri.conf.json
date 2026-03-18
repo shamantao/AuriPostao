@@ -21,7 +21,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "{{ PROJECT_NAME }}",
+        "title": "AuriPostao",
         "width": 1200,
         "height": 800,
         "resizable": true,
@@ -29,5 +29,5 @@
       }
     ]
   },
-  "identifier": "fr.phil.{{ PROJECT_NAME_LOWER }}"
+  "identifier": "fr.phil.auripostao"
 }

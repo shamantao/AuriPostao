@@ -8,7 +8,7 @@
 
 # ---------------------------------------------------------------------------
 [app]
-name       = "AuriPostao_tao_seed"
+name       = "AuriPostao"
 version    = "0.1.0"
 mode       = "debug"   # debug | normal
 language   = "fr"
@@ -26,7 +26,7 @@ strict_mode         = false
 # Any path outside these roots will be rejected at runtime.
 allowed_roots = [
   "$HOME/Downloads",
-  "/Users/phil/Library/CloudStorage/Dropbox/devwww/app/AuriPostao_tao_seed"
+  "/Users/phil/Library/CloudStorage/Dropbox/devwww/app/AuriPostao"
 ]
 
 # Runtime directories — created automatically on first run.
