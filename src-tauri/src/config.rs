@@ -84,7 +84,11 @@ pub fn load() -> Result<AppConfig, AppError> {
     let project_path = PathBuf::from("config/project.toml");
     builder = builder.add_source(config::File::from(project_path.as_path()).required(false));
 
-    // Layer 4: environment variables (APP__ prefix)
+    // Layer 4: machine-local override, git-ignored (optional)
+    let local_path = PathBuf::from("config/config.toml");
+    builder = builder.add_source(config::File::from(local_path.as_path()).required(false));
+
+    // Layer 5: environment variables (APP__ prefix)
     builder = builder.add_source(config::Environment::with_prefix("APP").separator("__"));
 
     let cfg = builder
@@ -112,7 +116,7 @@ fn bundled_default_path() -> PathBuf {
 
 fn user_config_path() -> Option<PathBuf> {
     dirs::config_dir().map(|mut p| {
-        p.push("auripostao_tao_seed");
+        p.push("auripostao");
         p.push("user.toml");
         p
     })
