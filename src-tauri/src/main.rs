@@ -129,6 +129,22 @@ struct WorkflowChannelsInput {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct WorkflowSourcesDto {
+    file_paths: Vec<String>,
+    directory_path: Option<String>,
+    recursive: bool,
+    max_file_size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowSourcesInput {
+    file_paths: Vec<String>,
+    directory_path: Option<String>,
+    recursive: bool,
+    max_file_size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct IngestionPreviewInput {
     file_paths: Vec<String>,
     directory_path: Option<String>,
@@ -421,6 +437,76 @@ fn workflow_channels_set(workflow_id: i64, channels: Vec<String>) -> Result<Vec<
 }
 
 #[tauri::command]
+fn workflow_sources_get(workflow_id: i64) -> Result<WorkflowSourcesDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/sources",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_sources_get: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid workflow_sources_get JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_sources_set(
+    workflow_id: i64,
+    payload: WorkflowSourcesInput,
+) -> Result<WorkflowSourcesDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/sources",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_sources_set: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid workflow_sources_set JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_ingestion_preview(workflow_id: i64) -> Result<IngestionPreviewResponse, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/ingestion/preview",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .post(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_ingestion_preview: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid workflow_ingestion_preview JSON response: {e}"))
+}
+
+#[tauri::command]
 fn ingestion_preview(payload: IngestionPreviewInput) -> Result<IngestionPreviewResponse, String> {
     let api_url = api_base_url();
     let url = format!("{}/ingestion/preview", api_url.trim_end_matches('/'));
@@ -510,6 +596,9 @@ fn main() -> Result<(), AppError> {
             channels_set_dummy,
             workflow_channels_get,
             workflow_channels_set,
+            workflow_sources_get,
+            workflow_sources_set,
+            workflow_ingestion_preview,
             ingestion_preview,
             pick_text_files,
             pick_directory

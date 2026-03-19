@@ -68,6 +68,13 @@
     };
   };
 
+  type WorkflowSourcesConfig = {
+    file_paths: string[];
+    directory_path: string | null;
+    recursive: boolean;
+    max_file_size_bytes: number;
+  };
+
   let health: ApiHealthStatus | null = null;
   let bootstrap: BootstrapStatus | null = null;
   let workflows: Workflow[] = [];
@@ -79,6 +86,7 @@
   let channelStatus: ChannelStatus | null = null;
   let channelsLoading = false;
   let channelsError = "";
+  let sourceWorkflowId: number | null = null;
   let sourceFiles: string[] = [];
   let sourceDirectory = "";
   let includeSubdirs = true;
@@ -115,6 +123,14 @@
 
   function dedupePaths(paths: string[]): string[] {
     return [...new Set(paths)];
+  }
+
+  function selectedWorkflowLabel(): string {
+    if (sourceWorkflowId == null) {
+      return "(aucun workflow selectionne)";
+    }
+    const wf = workflows.find((w) => w.id === sourceWorkflowId);
+    return wf ? `${wf.name} (#${wf.id})` : `#${sourceWorkflowId}`;
   }
 
   function resetForm() {
@@ -186,6 +202,61 @@
       loading = false;
     }
     await Promise.all([loadWorkflows(), loadChannelStatus()]);
+    if (sourceWorkflowId != null && !workflows.some((w) => w.id === sourceWorkflowId)) {
+      clearAllSources();
+      sourceWorkflowId = null;
+    }
+  }
+
+  async function selectWorkflowForSources(workflowId: number) {
+    sourceWorkflowId = workflowId;
+    ingestionPreview = null;
+    ingestionError = "";
+    ingestionWarning = "";
+    ingestionInfo = "";
+
+    try {
+      const cfg = await invoke<WorkflowSourcesConfig>("workflow_sources_get", {
+        workflowId,
+      });
+      sourceFiles = cfg.file_paths ?? [];
+      sourceDirectory = cfg.directory_path ?? "";
+      includeSubdirs = cfg.recursive;
+      maxFileSizeBytes = cfg.max_file_size_bytes;
+      ingestionInfo = "Sources du workflow chargees.";
+    } catch (e) {
+      ingestionError = invokeError(e);
+      sourceFiles = [];
+      sourceDirectory = "";
+      includeSubdirs = true;
+      maxFileSizeBytes = 1_000_000;
+    }
+  }
+
+  async function saveWorkflowSources() {
+    if (sourceWorkflowId == null) {
+      ingestionError = "Selectionne un workflow pour rattacher les sources.";
+      return;
+    }
+    ingestionError = "";
+    try {
+      const cfg = await invoke<WorkflowSourcesConfig>("workflow_sources_set", {
+        workflowId: sourceWorkflowId,
+        payload: {
+          file_paths: sourceFiles,
+          directory_path: sourceDirectory || null,
+          recursive: includeSubdirs,
+          max_file_size_bytes: maxFileSizeBytes,
+        },
+      });
+      sourceFiles = cfg.file_paths ?? [];
+      sourceDirectory = cfg.directory_path ?? "";
+      includeSubdirs = cfg.recursive;
+      maxFileSizeBytes = cfg.max_file_size_bytes;
+      ingestionInfo = "Sources enregistrees pour ce workflow.";
+    } catch (e) {
+      ingestionError = invokeError(e);
+    }
   }
 
   async function submitWorkflow() {
@@ -324,6 +395,11 @@
     ingestionWarning = "";
     ingestionPreview = null;
 
+    if (sourceWorkflowId == null) {
+      ingestionError = "Selectionne d abord un workflow pour le test d ingestion.";
+      return;
+    }
+
     if (sourceFiles.length === 0 && !sourceDirectory) {
       ingestionError = "Aucune source selectionnee.";
       return;
@@ -331,13 +407,18 @@
 
     ingestionLoading = true;
     try {
-      ingestionPreview = await invoke<IngestionPreview>("ingestion_preview", {
+      await invoke<WorkflowSourcesConfig>("workflow_sources_set", {
+        workflowId: sourceWorkflowId,
         payload: {
           file_paths: sourceFiles,
           directory_path: sourceDirectory || null,
           recursive: includeSubdirs,
           max_file_size_bytes: maxFileSizeBytes,
         },
+      });
+
+      ingestionPreview = await invoke<IngestionPreview>("workflow_ingestion_preview", {
+        workflowId: sourceWorkflowId,
       });
 
       const tooLargeFiles = ingestionPreview.ignored_files.filter(
@@ -353,7 +434,7 @@
         ingestionError =
           "Aucune source valide detectee. Ajoute au moins un fichier texte (.txt/.md) lisible sous le seuil de taille.";
       } else {
-        ingestionInfo = "Apercu ingestion genere.";
+        ingestionInfo = "Apercu ingestion genere pour le workflow selectionne.";
       }
     } catch (e) {
       ingestionError = invokeError(e);
@@ -475,6 +556,9 @@
             </div>
             <div class="actions">
               <button type="button" class="secondary" on:click={() => startEdit(w)}>Editer</button>
+              <button type="button" class="secondary" on:click={() => selectWorkflowForSources(w.id)}>
+                Sources
+              </button>
               {#if pendingDeleteId === w.id}
                 <button type="button" class="danger" on:click={() => removeWorkflow(w)}>Confirmer</button>
                 <button type="button" class="secondary" on:click={() => (pendingDeleteId = null)}>Annuler</button>
@@ -506,9 +590,13 @@
 
   <section id="sources-config">
     <h2>Selection des sources</h2>
+    <p>Workflow cible: <strong>{selectedWorkflowLabel()}</strong></p>
     <div class="actions">
       <button type="button" on:click={pickFiles}>Picker fichiers texte</button>
       <button type="button" class="secondary" on:click={pickDirectory}>Picker dossier</button>
+      <button type="button" class="secondary" on:click={saveWorkflowSources} disabled={sourceWorkflowId == null}>
+        Enregistrer sources
+      </button>
       <button type="button" class="secondary" on:click={clearAllSources}>Reinitialiser sources</button>
     </div>
 

@@ -13,6 +13,24 @@ Approche: Vertical slice par EPIC (socle + interface Tauri testable a chaque EPI
 - Les canaux de publication sont livres un par un, chacun dans sa propre US.
 - EPIC-0 est obligatoire et basee sur tao-init.
 
+## Principe directeur (workflow pipeline)
+Un workflow est l ossature metier et doit contenir les blocs suivants:
+- une ou plusieurs sources,
+- un ou plusieurs canaux,
+- un titre et une description,
+- une planification,
+- un modele de traitement (quand livre dans les EPIC IA).
+
+Regles transverses obligatoires:
+- Toute configuration metier est rattachee a `workflow_id` (jamais etat global d ecran uniquement).
+- Toute vue IHM d ingestion, validation, generation ou publication s ouvre dans le contexte d un workflow.
+- Toute API de previsualisation ou de test accepte un `workflow_id` ou lit une configuration deja persistee par `workflow_id`.
+- Toute US Interface qui manipule des donnees metier doit avoir sa contrepartie de persistance (DB/API) dans le meme EPIC ou en prerequis explicite.
+
+Mode de pilotage:
+- Le markdown backlog fait foi comme source de verite.
+- Les issues GitHub sont optionnelles et servent de support de suivi, pas de specification principale.
+
 ## EPIC-0 - Foundation projet via tao-init
 Objectif testable:
 Le projet AuriPostao est genere, structure et executable localement avec les conventions tao-init, les checks baseline verts, une base Tauri + API Python connectee, et un espace GitHub pret pour piloter le delivery par US.
@@ -95,7 +113,7 @@ Sections:
 
 ## EPIC-1 - Workflows CRUD et modele metier
 Objectif testable:
-Un utilisateur peut creer, editer, dupliquer, activer/desactiver et supprimer un workflow depuis l IHM, avec persistance SQLite.
+Un utilisateur peut creer, editer, activer/desactiver et supprimer un workflow depuis l IHM, avec persistance SQLite des attributs coeur du pipeline.
 
 US:
 - US-1.1 (Socle) - Modele Workflow et schema SQLite
@@ -125,6 +143,13 @@ US:
     1. Bouton creer workflow desactive sans canal valide.
     2. Message clair et lien vers configuration canaux.
 
+- US-1.5 (Socle+Interface) - Associer un workflow a un ou plusieurs canaux
+  - En tant qu utilisateur, je veux definir les canaux cibles par workflow.
+  - Acceptance:
+    1. Mapping workflow-canaux persiste en DB.
+    2. API lecture/ecriture du mapping par workflow.
+    3. IHM permet de voir/editer les canaux d un workflow.
+
 Scenario test humain EPIC-1:
 1. Configurer au moins un canal dummy.
 2. Creer un workflow.
@@ -133,42 +158,51 @@ Scenario test humain EPIC-1:
 
 ## EPIC-2 - Ingestion texte multi-sources
 Objectif testable:
-Depuis l IHM, un workflow peut ingerer plusieurs fichiers texte et/ou un dossier avec sous-dossiers, puis afficher un apercu exploitable.
+Depuis l IHM, les sources sont configurees et persistees par workflow, puis testees via un apercu exploitable.
 
 US:
-- US-2.1 (Socle) - Connecteur fichiers texte
-  - En tant que moteur, je veux lire .txt et .md en lot avec gestion d erreurs.
+- US-2.0 (Socle) - Modele de sources rattachees au workflow
+  - En tant que moteur, je veux persister les sources d un workflow pour executer un pipeline stable.
+  - Acceptance:
+    1. Schema DB versionne pour lier `workflow_id` a une ou plusieurs sources (fichier/dossier + options).
+    2. API CRUD des sources d un workflow.
+    3. Suppression d un workflow supprime ses sources associees.
+
+- US-2.1 (Socle) - Connecteur fichiers texte par workflow
+  - En tant que moteur, je veux lire .txt et .md en lot depuis les sources configurees d un workflow.
   - Acceptance:
     1. Lecture multi-fichiers reussie.
     2. Encodage UTF-8 gere + fallback.
     3. Fichiers non texte ignores avec log explicite.
 
-- US-2.2 (Socle) - Ingestion dossier recursive
-  - En tant que moteur, je veux ingerer un dossier avec option recursion.
+- US-2.2 (Socle) - Ingestion dossier recursive par workflow
+  - En tant que moteur, je veux ingerer un dossier d un workflow avec option recursion.
   - Acceptance:
     1. Mode dossier simple et dossier recursive disponibles.
     2. Filtrage extensions texte uniquement.
     3. Limite de taille par fichier configurable.
 
-- US-2.3 (Interface) - Ecran selection sources
-  - En tant qu utilisateur, je veux selectionner fichiers/dossiers et voir le resume des sources.
+- US-2.3 (Interface) - Ecran selection sources d un workflow
+  - En tant qu utilisateur, je veux selectionner fichiers/dossiers pour un workflow et voir le resume persiste.
   - Acceptance:
     1. Picker fichiers et picker dossier disponibles.
     2. Toggle inclure sous-dossiers.
     3. Apercu: nb fichiers, taille totale, exemples de contenu tronques.
+    4. Sources rattachees au workflow courant et rechargees au retour sur ce workflow.
 
-- US-2.4 (Interface) - Validation pre-run
-  - En tant qu utilisateur, je veux valider que la source est correcte avant de lancer.
+- US-2.4 (Interface) - Validation pre-run d un workflow
+  - En tant qu utilisateur, je veux valider que les sources de mon workflow sont correctes avant de lancer.
   - Acceptance:
     1. Message d erreur si aucune source valide.
     2. Alerte si taille depasse seuil.
-    3. Bouton tester ingestion avec resultat immediat.
+    3. Bouton tester ingestion avec resultat immediat, lie au workflow courant.
 
 Scenario test humain EPIC-2:
 1. Ouvrir un workflow existant.
 2. Ajouter 3 fichiers + 1 dossier avec sous-dossiers.
-3. Lancer test ingestion.
-4. Verifier apercu et erreurs lisibles.
+3. Quitter puis rouvrir ce workflow et verifier la persistance des sources.
+4. Lancer test ingestion.
+5. Verifier apercu et erreurs lisibles.
 
 ## EPIC-3 - Generation IA et criteres de parole
 Objectif testable:

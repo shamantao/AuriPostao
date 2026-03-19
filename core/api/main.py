@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
@@ -52,6 +53,13 @@ class ChannelDummyUpdate(BaseModel):
 
 
 class IngestionPreviewRequest(BaseModel):
+    file_paths: list[str] = []
+    directory_path: str | None = None
+    recursive: bool = False
+    max_file_size_bytes: int = Field(default=1_000_000, ge=1)
+
+
+class WorkflowSourcesUpdate(BaseModel):
     file_paths: list[str] = []
     directory_path: str | None = None
     recursive: bool = False
@@ -186,6 +194,94 @@ def _ingestion_preview(payload: IngestionPreviewRequest) -> dict[str, Any]:
             "total_candidates": len(unique_candidates),
             "total_size_bytes": sum(item["size_bytes"] for item in accepted),
         },
+    }
+
+
+def _workflow_exists(conn: sqlite3.Connection, workflow_id: int) -> bool:
+    return (
+        conn.execute("SELECT 1 FROM workflows WHERE id = ?", (workflow_id,)).fetchone() is not None
+    )
+
+
+def _normalize_file_paths(paths: list[str]) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for raw in paths:
+        value = raw.strip()
+        if not value:
+            continue
+        if value in seen:
+            continue
+        seen.add(value)
+        unique.append(value)
+    return unique
+
+
+def _get_workflow_sources(conn: sqlite3.Connection, workflow_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT file_paths_json, directory_path, recursive, max_file_size_bytes
+        FROM workflow_source_configs
+        WHERE workflow_id = ?
+        """,
+        (workflow_id,),
+    ).fetchone()
+    if row is None:
+        return {
+            "file_paths": [],
+            "directory_path": None,
+            "recursive": False,
+            "max_file_size_bytes": 1_000_000,
+        }
+
+    try:
+        file_paths = json.loads(row["file_paths_json"])
+        if not isinstance(file_paths, list):
+            file_paths = []
+    except (json.JSONDecodeError, TypeError):
+        file_paths = []
+
+    return {
+        "file_paths": _normalize_file_paths([str(v) for v in file_paths]),
+        "directory_path": row["directory_path"],
+        "recursive": bool(row["recursive"]),
+        "max_file_size_bytes": int(row["max_file_size_bytes"]),
+    }
+
+
+def _set_workflow_sources(
+    conn: sqlite3.Connection, workflow_id: int, payload: WorkflowSourcesUpdate
+) -> dict[str, Any]:
+    file_paths = _normalize_file_paths(payload.file_paths)
+    directory_path = payload.directory_path.strip() if payload.directory_path else None
+    now = _utc_now()
+    conn.execute(
+        """
+        INSERT INTO workflow_source_configs(
+            workflow_id, file_paths_json, directory_path, recursive, max_file_size_bytes, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workflow_id)
+        DO UPDATE SET
+            file_paths_json = excluded.file_paths_json,
+            directory_path = excluded.directory_path,
+            recursive = excluded.recursive,
+            max_file_size_bytes = excluded.max_file_size_bytes,
+            updated_at = excluded.updated_at
+        """,
+        (
+            workflow_id,
+            json.dumps(file_paths),
+            directory_path,
+            int(payload.recursive),
+            payload.max_file_size_bytes,
+            now,
+        ),
+    )
+    return {
+        "file_paths": file_paths,
+        "directory_path": directory_path,
+        "recursive": payload.recursive,
+        "max_file_size_bytes": payload.max_file_size_bytes,
     }
 
 
@@ -328,6 +424,29 @@ def init_db(db_path: str) -> int:
                 (3, _utc_now()),
             )
 
+        migration_v4_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 4"
+        ).fetchone()
+
+        if not migration_v4_applied:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_source_configs (
+                    workflow_id INTEGER PRIMARY KEY,
+                    file_paths_json TEXT NOT NULL DEFAULT '[]',
+                    directory_path TEXT,
+                    recursive INTEGER NOT NULL DEFAULT 0 CHECK (recursive IN (0, 1)),
+                    max_file_size_bytes INTEGER NOT NULL DEFAULT 1000000,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (4, _utc_now()),
+            )
+
         current_version = conn.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
         ).fetchone()[0]
@@ -394,6 +513,38 @@ def set_dummy_channel(payload: ChannelDummyUpdate) -> dict[str, Any]:
 
 @app.post("/ingestion/preview")
 def ingestion_preview(payload: IngestionPreviewRequest) -> dict[str, Any]:
+    return _ingestion_preview(payload)
+
+
+@app.get("/workflows/{workflow_id}/sources")
+def get_workflow_sources(workflow_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        return _get_workflow_sources(conn, workflow_id)
+
+
+@app.put("/workflows/{workflow_id}/sources")
+def set_workflow_sources(workflow_id: int, payload: WorkflowSourcesUpdate) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        return _set_workflow_sources(conn, workflow_id, payload)
+
+
+@app.post("/workflows/{workflow_id}/ingestion/preview")
+def workflow_ingestion_preview(workflow_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        sources = _get_workflow_sources(conn, workflow_id)
+
+    payload = IngestionPreviewRequest(
+        file_paths=sources["file_paths"],
+        directory_path=sources["directory_path"],
+        recursive=bool(sources["recursive"]),
+        max_file_size_bytes=int(sources["max_file_size_bytes"]),
+    )
     return _ingestion_preview(payload)
 
 

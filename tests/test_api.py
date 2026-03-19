@@ -38,7 +38,7 @@ class ApiDatabaseTests(unittest.TestCase):
             db_path = Path(tmpdir) / "auripostao.db"
             version = init_db(str(db_path))
 
-            self.assertEqual(version, 3)
+            self.assertEqual(version, 4)
 
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
@@ -53,6 +53,7 @@ class ApiDatabaseTests(unittest.TestCase):
                     "workflow_status",
                     "channel_configs",
                     "workflow_channels",
+                    "workflow_source_configs",
                 }.issubset(tables)
             )
 
@@ -66,7 +67,7 @@ class ApiDatabaseTests(unittest.TestCase):
                     "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
                 ).fetchone()[0]
 
-            self.assertEqual(version, 3)
+            self.assertEqual(version, 4)
 
     def test_workflows_enforces_unique_name_per_local_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -374,6 +375,98 @@ class ApiIngestionTests(unittest.TestCase):
         self.assertIn(str(root_file), accepted_recursive)
         self.assertIn(str(deep_file), accepted_recursive)
         self.assertEqual(body_recursive["summary"]["total_size_bytes"], 72)
+
+
+class ApiWorkflowSourcesTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "auripostao.db")
+        self.original_db_path = api_main.DB_PATH
+        api_main.DB_PATH = self.db_path
+        init_db(self.db_path)
+        self.client = TestClient(app)
+        self.client.put("/channels/dummy", json={"enabled": True})
+        created = self.client.post(
+            "/workflows",
+            json={"name": "WF sources", "description": "", "is_active": True, "channels": ["dummy"]},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.workflow_id = created.json()["id"]
+
+        self.sources_dir = Path(self.tmpdir.name) / "sources"
+        self.sources_dir.mkdir(parents=True, exist_ok=True)
+        self.f1 = self.sources_dir / "a.txt"
+        self.f2 = self.sources_dir / "b.md"
+        self.f1.write_text("aaa", encoding="utf-8")
+        self.f2.write_text("bbb", encoding="utf-8")
+
+    def tearDown(self) -> None:
+        api_main.DB_PATH = self.original_db_path
+        self.tmpdir.cleanup()
+
+    def test_get_sources_default_config(self) -> None:
+        resp = self.client.get(f"/workflows/{self.workflow_id}/sources")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["file_paths"], [])
+        self.assertIsNone(body["directory_path"])
+        self.assertFalse(body["recursive"])
+        self.assertEqual(body["max_file_size_bytes"], 1_000_000)
+
+    def test_set_and_get_sources_for_workflow(self) -> None:
+        put = self.client.put(
+            f"/workflows/{self.workflow_id}/sources",
+            json={
+                "file_paths": [str(self.f1), str(self.f2), str(self.f1)],
+                "directory_path": str(self.sources_dir),
+                "recursive": True,
+                "max_file_size_bytes": 2048,
+            },
+        )
+        self.assertEqual(put.status_code, 200)
+        body_put = put.json()
+        self.assertEqual(len(body_put["file_paths"]), 2)
+        self.assertEqual(body_put["directory_path"], str(self.sources_dir))
+        self.assertTrue(body_put["recursive"])
+        self.assertEqual(body_put["max_file_size_bytes"], 2048)
+
+        get = self.client.get(f"/workflows/{self.workflow_id}/sources")
+        self.assertEqual(get.status_code, 200)
+        body_get = get.json()
+        self.assertEqual(set(body_get["file_paths"]), {str(self.f1), str(self.f2)})
+
+    def test_preview_uses_persisted_workflow_sources(self) -> None:
+        self.client.put(
+            f"/workflows/{self.workflow_id}/sources",
+            json={
+                "file_paths": [str(self.f1)],
+                "directory_path": None,
+                "recursive": False,
+                "max_file_size_bytes": 1024,
+            },
+        )
+        resp = self.client.post(f"/workflows/{self.workflow_id}/ingestion/preview")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["summary"]["accepted"], 1)
+        self.assertEqual(body["accepted_files"][0]["path"], str(self.f1))
+
+    def test_sources_deleted_with_workflow(self) -> None:
+        self.client.put(
+            f"/workflows/{self.workflow_id}/sources",
+            json={
+                "file_paths": [str(self.f1)],
+                "directory_path": str(self.sources_dir),
+                "recursive": True,
+                "max_file_size_bytes": 1024,
+            },
+        )
+        deleted = self.client.delete(f"/workflows/{self.workflow_id}")
+        self.assertEqual(deleted.status_code, 200)
+
+        get = self.client.get(f"/workflows/{self.workflow_id}/sources")
+        self.assertEqual(get.status_code, 404)
+        self.assertEqual(get.json()["code"], "workflow_not_found")
 
 
 if __name__ == "__main__":
