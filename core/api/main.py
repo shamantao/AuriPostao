@@ -40,6 +40,10 @@ class WorkflowOut(BaseModel):
     updated_at: str
 
 
+class ChannelDummyUpdate(BaseModel):
+    enabled: bool
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -65,6 +69,20 @@ def _row_to_workflow(row: sqlite3.Row) -> dict[str, Any]:
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
+
+
+def _enabled_channels(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT channel_name FROM channel_configs WHERE is_enabled = 1 ORDER BY channel_name"
+    ).fetchall()
+    return [str(row["channel_name"]) for row in rows]
+
+
+def _has_valid_channel(conn: sqlite3.Connection) -> bool:
+    row = conn.execute(
+        "SELECT COUNT(1) AS total FROM channel_configs WHERE is_enabled = 1"
+    ).fetchone()
+    return bool(row["total"])
 
 
 @app.exception_handler(HTTPException)
@@ -156,6 +174,34 @@ def init_db(db_path: str) -> int:
                 (1, _utc_now()),
             )
 
+        migration_v2_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 2"
+        ).fetchone()
+
+        if not migration_v2_applied:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS channel_configs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    channel_name TEXT NOT NULL UNIQUE,
+                    is_enabled INTEGER NOT NULL DEFAULT 0 CHECK (is_enabled IN (0, 1)),
+                    config_json TEXT NOT NULL DEFAULT '{}',
+                    updated_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO channel_configs(channel_name, is_enabled, config_json, updated_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                ("dummy", 0, "{}", _utc_now()),
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (2, _utc_now()),
+            )
+
         current_version = conn.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
         ).fetchone()[0]
@@ -187,6 +233,39 @@ def bootstrap_status() -> dict[str, str]:
     }
 
 
+@app.get("/channels/status")
+def channels_status() -> dict[str, Any]:
+    with _connect() as conn:
+        valid_channels = _enabled_channels(conn)
+    return {
+        "has_valid_channel": len(valid_channels) > 0,
+        "valid_channels": valid_channels,
+        "config_url": "#channels-config",
+    }
+
+
+@app.put("/channels/dummy")
+def set_dummy_channel(payload: ChannelDummyUpdate) -> dict[str, Any]:
+    now = _utc_now()
+    with _connect() as conn:
+        conn.execute(
+            """
+            INSERT INTO channel_configs(channel_name, is_enabled, config_json, updated_at)
+            VALUES (?, ?, ?, ?)
+            ON CONFLICT(channel_name)
+            DO UPDATE SET is_enabled = excluded.is_enabled, updated_at = excluded.updated_at
+            """,
+            ("dummy", int(payload.enabled), "{}", now),
+        )
+        valid_channels = _enabled_channels(conn)
+
+    return {
+        "has_valid_channel": len(valid_channels) > 0,
+        "valid_channels": valid_channels,
+        "config_url": "#channels-config",
+    }
+
+
 @app.get("/workflows")
 def list_workflows() -> dict[str, list[WorkflowOut]]:
     with _connect() as conn:
@@ -209,6 +288,12 @@ def create_workflow(payload: WorkflowCreate) -> WorkflowOut:
     now = _utc_now()
     try:
         with _connect() as conn:
+            if not _has_valid_channel(conn):
+                _api_error(
+                    403,
+                    "no_valid_channel",
+                    "configure at least one valid channel before creating a workflow",
+                )
             cursor = conn.execute(
                 """
                 INSERT INTO workflows(local_user, name, description, is_active, created_at, updated_at)

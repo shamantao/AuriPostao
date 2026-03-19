@@ -123,6 +123,18 @@ struct WorkflowUpdateInput {
     is_active: Option<bool>,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ChannelStatusDto {
+    has_valid_channel: bool,
+    valid_channels: Vec<String>,
+    config_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ChannelDummyInput {
+    enabled: bool,
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiError {
     code: String,
@@ -273,6 +285,43 @@ fn workflows_delete(workflow_id: i64) -> Result<bool, String> {
     Ok(true)
 }
 
+#[tauri::command]
+fn channels_status() -> Result<ChannelStatusDto, String> {
+    let api_url = api_base_url();
+    let url = format!("{}/channels/status", api_url.trim_end_matches('/'));
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for channels_status: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid channels_status JSON response: {e}"))
+}
+
+#[tauri::command]
+fn channels_set_dummy(payload: ChannelDummyInput) -> Result<ChannelStatusDto, String> {
+    let api_url = api_base_url();
+    let url = format!("{}/channels/dummy", api_url.trim_end_matches('/'));
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for channels_set_dummy: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid channels_set_dummy JSON response: {e}"))
+}
+
 fn main() -> Result<(), AppError> {
     // 1. Load merged config (default → user → project → runtime)
     let cfg = config::load()?;
@@ -339,7 +388,9 @@ fn main() -> Result<(), AppError> {
             workflows_list,
             workflows_create,
             workflows_update,
-            workflows_delete
+            workflows_delete,
+            channels_status,
+            channels_set_dummy
         ])
         .run(tauri::generate_context!())
         .map_err(|e| AppError::Tauri(e.to_string()))

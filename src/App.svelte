@@ -35,6 +35,12 @@
     is_active: boolean;
   };
 
+  type ChannelStatus = {
+    has_valid_channel: boolean;
+    valid_channels: string[];
+    config_url: string;
+  };
+
   let health: ApiHealthStatus | null = null;
   let bootstrap: BootstrapStatus | null = null;
   let workflows: Workflow[] = [];
@@ -43,6 +49,9 @@
   let workflowsInfo = "";
   let editingId: number | null = null;
   let pendingDeleteId: number | null = null;
+  let channelStatus: ChannelStatus | null = null;
+  let channelsLoading = false;
+  let channelsError = "";
   let form: WorkflowForm = {
     name: "",
     description: "",
@@ -79,6 +88,35 @@
     }
   }
 
+  async function loadChannelStatus() {
+    channelsLoading = true;
+    channelsError = "";
+    try {
+      channelStatus = await invoke<ChannelStatus>("channels_status");
+    } catch (e) {
+      channelsError = invokeError(e);
+      channelStatus = null;
+    } finally {
+      channelsLoading = false;
+    }
+  }
+
+  async function setDummyChannel(enabled: boolean) {
+    channelsError = "";
+    try {
+      channelStatus = await invoke<ChannelStatus>("channels_set_dummy", {
+        payload: { enabled },
+      });
+      if (enabled) {
+        workflowsInfo = "Canal dummy configure: creation workflow debloquee.";
+      } else {
+        workflowsInfo = "Canal dummy desactive.";
+      }
+    } catch (e) {
+      channelsError = invokeError(e);
+    }
+  }
+
   async function runChecks() {
     loading = true;
     try {
@@ -95,7 +133,7 @@
     } finally {
       loading = false;
     }
-    await loadWorkflows();
+    await Promise.all([loadWorkflows(), loadChannelStatus()]);
   }
 
   async function submitWorkflow() {
@@ -103,6 +141,11 @@
     workflowsInfo = "";
     if (!form.name.trim()) {
       workflowsError = "validation_error: name is required";
+      return;
+    }
+
+    if (editingId == null && !channelStatus?.has_valid_channel) {
+      workflowsError = "no_valid_channel: configure au moins un canal valide avant de creer un workflow";
       return;
     }
 
@@ -199,6 +242,13 @@
   <section>
     <h2>Workflows</h2>
 
+    {#if !channelStatus?.has_valid_channel}
+      <p class="warn">
+        Aucun canal valide configure. La creation de workflow est bloquee.
+        <a href={channelStatus?.config_url ?? "#channels-config"}>Configurer les canaux</a>
+      </p>
+    {/if}
+
     <form class="workflow-form" on:submit|preventDefault={submitWorkflow}>
       <label>
         Nom (obligatoire)
@@ -216,7 +266,9 @@
       </label>
 
       <div class="actions">
-        <button type="submit">{editingId == null ? "Creer" : "Enregistrer"}</button>
+        <button type="submit" disabled={editingId == null && !channelStatus?.has_valid_channel}>
+          {editingId == null ? "Creer" : "Enregistrer"}
+        </button>
         {#if editingId != null}
           <button type="button" class="secondary" on:click={resetForm}>Annuler edition</button>
         {/if}
@@ -255,6 +307,22 @@
         {/each}
       </ul>
     {/if}
+  </section>
+
+  <section id="channels-config">
+    <h2>Configuration canaux</h2>
+    <p>Canaux valides: {channelStatus?.valid_channels?.join(", ") || "aucun"}</p>
+    {#if channelsLoading}
+      <p>Verification canaux…</p>
+    {:else}
+      <div class="actions">
+        <button type="button" on:click={() => setDummyChannel(true)}>Activer canal dummy</button>
+        <button type="button" class="secondary" on:click={() => setDummyChannel(false)}>
+          Desactiver canal dummy
+        </button>
+      </div>
+    {/if}
+    {#if channelsError}<p class="ko">{channelsError}</p>{/if}
   </section>
 
   <button on:click={runChecks} disabled={loading}>
@@ -347,6 +415,9 @@
     padding: 0.1em 0.4em;
     border-radius: 3px;
     font-size: 0.9em;
+  }
+  a {
+    color: #0645ad;
   }
   .ok   { color: #0a7d2d; }
   .ko   { color: #b12020; }

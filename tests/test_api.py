@@ -38,7 +38,7 @@ class ApiDatabaseTests(unittest.TestCase):
             db_path = Path(tmpdir) / "auripostao.db"
             version = init_db(str(db_path))
 
-            self.assertEqual(version, 1)
+            self.assertEqual(version, 2)
 
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
@@ -46,7 +46,11 @@ class ApiDatabaseTests(unittest.TestCase):
                 ).fetchall()
                 tables = {name for (name,) in rows}
 
-            self.assertTrue({"workflows", "workflow_revisions", "workflow_status"}.issubset(tables))
+            self.assertTrue(
+                {"workflows", "workflow_revisions", "workflow_status", "channel_configs"}.issubset(
+                    tables
+                )
+            )
 
     def test_init_db_records_initial_migration(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -58,7 +62,7 @@ class ApiDatabaseTests(unittest.TestCase):
                     "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
                 ).fetchone()[0]
 
-            self.assertEqual(version, 1)
+            self.assertEqual(version, 2)
 
     def test_workflows_enforces_unique_name_per_local_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -92,6 +96,7 @@ class ApiWorkflowCrudTests(unittest.TestCase):
         api_main.DB_PATH = self.db_path
         init_db(self.db_path)
         self.client = TestClient(app)
+        self.client.put("/channels/dummy", json={"enabled": True})
 
     def tearDown(self) -> None:
         api_main.DB_PATH = self.original_db_path
@@ -162,6 +167,32 @@ class ApiWorkflowCrudTests(unittest.TestCase):
         body = response.json()
         self.assertEqual(body["code"], "workflow_not_found")
         self.assertIn("not found", body["message"])
+
+    def test_create_is_blocked_without_valid_channel(self) -> None:
+        disable = self.client.put("/channels/dummy", json={"enabled": False})
+        self.assertEqual(disable.status_code, 200)
+
+        response = self.client.post(
+            "/workflows",
+            json={"name": "WF blocked", "description": "x", "is_active": True},
+        )
+        self.assertEqual(response.status_code, 403)
+        body = response.json()
+        self.assertEqual(body["code"], "no_valid_channel")
+
+    def test_channels_status_and_dummy_toggle(self) -> None:
+        disabled = self.client.put("/channels/dummy", json={"enabled": False})
+        self.assertEqual(disabled.status_code, 200)
+        self.assertFalse(disabled.json()["has_valid_channel"])
+
+        status = self.client.get("/channels/status")
+        self.assertEqual(status.status_code, 200)
+        self.assertFalse(status.json()["has_valid_channel"])
+
+        enabled = self.client.put("/channels/dummy", json={"enabled": True})
+        self.assertEqual(enabled.status_code, 200)
+        self.assertTrue(enabled.json()["has_valid_channel"])
+        self.assertIn("dummy", enabled.json()["valid_channels"])
 
 
 if __name__ == "__main__":
