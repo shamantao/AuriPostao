@@ -17,10 +17,17 @@ reports/
 # Node/Tauri
 node_modules/
 dist/
+src-tauri/target/
 
 # Editors
 .vscode/
 .idea/
 
+# Secret files
+config/config.toml
+.env
+*.pem
+*.key
+*.crt
 # docs
 # DOCS/
