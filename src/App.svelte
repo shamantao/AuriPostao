@@ -43,6 +43,30 @@
     config_url: string;
   };
 
+  type IngestionAcceptedFile = {
+    path: string;
+    size_bytes: number;
+    encoding: string;
+    preview: string;
+  };
+
+  type IngestionMessage = {
+    path: string;
+    reason: string;
+  };
+
+  type IngestionPreview = {
+    accepted_files: IngestionAcceptedFile[];
+    ignored_files: IngestionMessage[];
+    errors: IngestionMessage[];
+    summary: {
+      accepted: number;
+      ignored: number;
+      errors: number;
+      total_candidates: number;
+    };
+  };
+
   let health: ApiHealthStatus | null = null;
   let bootstrap: BootstrapStatus | null = null;
   let workflows: Workflow[] = [];
@@ -54,6 +78,14 @@
   let channelStatus: ChannelStatus | null = null;
   let channelsLoading = false;
   let channelsError = "";
+  let sourceFiles: string[] = [];
+  let sourceDirectory = "";
+  let includeSubdirs = true;
+  let maxFileSizeBytes = 1_000_000;
+  let ingestionLoading = false;
+  let ingestionError = "";
+  let ingestionInfo = "";
+  let ingestionPreview: IngestionPreview | null = null;
   let form: WorkflowForm = {
     name: "",
     description: "",
@@ -67,6 +99,16 @@
       return e;
     }
     return `Erreur Tauri: ${String(e)}`;
+  }
+
+  function formatBytes(value: number): string {
+    if (value < 1024) {
+      return `${value} B`;
+    }
+    if (value < 1024 * 1024) {
+      return `${(value / 1024).toFixed(1)} KB`;
+    }
+    return `${(value / (1024 * 1024)).toFixed(1)} MB`;
   }
 
   function resetForm() {
@@ -217,6 +259,58 @@
     }
   }
 
+  async function pickFiles() {
+    ingestionError = "";
+    try {
+      const picked = await invoke<string[]>("pick_text_files");
+      sourceFiles = picked;
+      ingestionInfo = picked.length ? `${picked.length} fichier(s) selectionne(s).` : "Aucun fichier selectionne.";
+    } catch (e) {
+      ingestionError = invokeError(e);
+    }
+  }
+
+  async function pickDirectory() {
+    ingestionError = "";
+    try {
+      const picked = await invoke<string | null>("pick_directory");
+      sourceDirectory = picked ?? "";
+      if (sourceDirectory) {
+        ingestionInfo = "Dossier selectionne.";
+      }
+    } catch (e) {
+      ingestionError = invokeError(e);
+    }
+  }
+
+  async function runIngestionPreview() {
+    ingestionError = "";
+    ingestionInfo = "";
+    ingestionPreview = null;
+
+    if (sourceFiles.length === 0 && !sourceDirectory) {
+      ingestionError = "Aucune source selectionnee.";
+      return;
+    }
+
+    ingestionLoading = true;
+    try {
+      ingestionPreview = await invoke<IngestionPreview>("ingestion_preview", {
+        payload: {
+          file_paths: sourceFiles,
+          directory_path: sourceDirectory || null,
+          recursive: includeSubdirs,
+          max_file_size_bytes: maxFileSizeBytes,
+        },
+      });
+      ingestionInfo = "Apercu ingestion genere.";
+    } catch (e) {
+      ingestionError = invokeError(e);
+    } finally {
+      ingestionLoading = false;
+    }
+  }
+
   onMount(() => {
     void runChecks();
   });
@@ -359,6 +453,83 @@
     {#if channelsError}<p class="ko">{channelsError}</p>{/if}
   </section>
 
+  <section id="sources-config">
+    <h2>Selection des sources</h2>
+    <div class="actions">
+      <button type="button" on:click={pickFiles}>Picker fichiers texte</button>
+      <button type="button" class="secondary" on:click={pickDirectory}>Picker dossier</button>
+    </div>
+
+    <p>Fichiers selectionnes: {sourceFiles.length}</p>
+    {#if sourceFiles.length > 0}
+      <ul class="source-list">
+        {#each sourceFiles as filePath}
+          <li>{filePath}</li>
+        {/each}
+      </ul>
+    {/if}
+
+    <p>Dossier selectionne: {sourceDirectory || "(aucun)"}</p>
+
+    <label class="checkbox">
+      <input type="checkbox" bind:checked={includeSubdirs} />
+      Inclure sous-dossiers (mode recursif)
+    </label>
+
+    <label>
+      Limite taille par fichier (bytes)
+      <input type="number" min="1" step="1" bind:value={maxFileSizeBytes} />
+    </label>
+
+    <div class="actions">
+      <button type="button" on:click={runIngestionPreview} disabled={ingestionLoading}>
+        {#if ingestionLoading}Ingestion...{:else}Tester ingestion{/if}
+      </button>
+    </div>
+
+    {#if ingestionError}<p class="ko">{ingestionError}</p>{/if}
+    {#if ingestionInfo}<p class="ok">{ingestionInfo}</p>{/if}
+
+    {#if ingestionPreview}
+      <div class="preview-box">
+        <p>
+          Resume: {ingestionPreview.summary.accepted} accepte(s), {ingestionPreview.summary.ignored} ignore(s),
+          {ingestionPreview.summary.errors} erreur(s), {ingestionPreview.summary.total_candidates} candidat(s)
+        </p>
+
+        {#if ingestionPreview.accepted_files.length > 0}
+          <h3>Exemples de contenu</h3>
+          <ul class="source-list">
+            {#each ingestionPreview.accepted_files.slice(0, 5) as file}
+              <li>
+                <p><strong>{file.path}</strong> ({formatBytes(file.size_bytes)}, {file.encoding})</p>
+                <pre>{file.preview}</pre>
+              </li>
+            {/each}
+          </ul>
+        {/if}
+
+        {#if ingestionPreview.ignored_files.length > 0}
+          <h3>Fichiers ignores</h3>
+          <ul class="source-list">
+            {#each ingestionPreview.ignored_files as item}
+              <li>{item.path} - {item.reason}</li>
+            {/each}
+          </ul>
+        {/if}
+
+        {#if ingestionPreview.errors.length > 0}
+          <h3>Erreurs</h3>
+          <ul class="source-list">
+            {#each ingestionPreview.errors as item}
+              <li>{item.path} - {item.reason}</li>
+            {/each}
+          </ul>
+        {/if}
+      </div>
+    {/if}
+  </section>
+
   <button on:click={runChecks} disabled={loading}>
     {#if loading}Verification en cours…{:else}Relancer le healthcheck{/if}
   </button>
@@ -442,6 +613,25 @@
     flex-wrap: wrap;
     gap: 0.5rem;
     margin-top: 0.25rem;
+  }
+  .source-list {
+    margin: 0.5rem 0;
+    padding-left: 1.2rem;
+  }
+  .preview-box {
+    margin-top: 0.75rem;
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 0.75rem;
+    background: #fafafa;
+  }
+  pre {
+    white-space: pre-wrap;
+    word-break: break-word;
+    background: #f4f4f4;
+    border-radius: 4px;
+    padding: 0.5rem;
+    margin: 0.35rem 0 0;
   }
   .actions {
     display: flex;

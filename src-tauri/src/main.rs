@@ -144,6 +144,26 @@ struct IngestionPreviewResponse {
     summary: serde_json::Value,
 }
 
+#[tauri::command]
+fn pick_text_files() -> Result<Vec<String>, String> {
+    let files = rfd::FileDialog::new()
+        .add_filter("Text files", &["txt", "md"])
+        .pick_files();
+
+    let selected = files
+        .unwrap_or_default()
+        .into_iter()
+        .map(|p| p.display().to_string())
+        .collect();
+    Ok(selected)
+}
+
+#[tauri::command]
+fn pick_directory() -> Result<Option<String>, String> {
+    let dir = rfd::FileDialog::new().pick_folder();
+    Ok(dir.map(|p| p.display().to_string()))
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 struct WorkflowUpdateInput {
     name: Option<String>,
@@ -490,7 +510,9 @@ fn main() -> Result<(), AppError> {
             channels_set_dummy,
             workflow_channels_get,
             workflow_channels_set,
-            ingestion_preview
+            ingestion_preview,
+            pick_text_files,
+            pick_directory
         ])
         .run(tauri::generate_context!())
         .map_err(|e| AppError::Tauri(e.to_string()))
