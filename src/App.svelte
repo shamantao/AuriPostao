@@ -19,9 +19,79 @@
     mode: string;
   };
 
+  type Workflow = {
+    id: number;
+    local_user: string;
+    name: string;
+    description: string;
+    is_active: boolean;
+    created_at: string;
+    updated_at: string;
+  };
+
+  type WorkflowForm = {
+    name: string;
+    description: string;
+    is_active: boolean;
+  };
+
   let health: ApiHealthStatus | null = null;
   let bootstrap: BootstrapStatus | null = null;
+  let workflows: Workflow[] = [];
+  let workflowsLoading = false;
+  let workflowsError = "";
+  let workflowsInfo = "";
+  let editingId: number | null = null;
+  let form: WorkflowForm = {
+    name: "",
+    description: "",
+    is_active: true,
+  };
   let loading = false;
+
+  function apiBaseUrl(): string {
+    return health?.api_url ?? "http://127.0.0.1:8787";
+  }
+
+  async function readErrorMessage(response: Response): Promise<string> {
+    try {
+      const body = await response.json();
+      if (body?.code && body?.message) {
+        return `${body.code}: ${body.message}`;
+      }
+      return JSON.stringify(body);
+    } catch {
+      return `HTTP ${response.status}`;
+    }
+  }
+
+  function resetForm() {
+    editingId = null;
+    form = {
+      name: "",
+      description: "",
+      is_active: true,
+    };
+  }
+
+  async function loadWorkflows() {
+    workflowsLoading = true;
+    workflowsError = "";
+    workflowsInfo = "";
+    try {
+      const response = await fetch(`${apiBaseUrl()}/workflows`);
+      if (!response.ok) {
+        workflowsError = await readErrorMessage(response);
+        return;
+      }
+      const body = await response.json();
+      workflows = body.items ?? [];
+    } catch (e) {
+      workflowsError = `Erreur reseau: ${String(e)}`;
+    } finally {
+      workflowsLoading = false;
+    }
+  }
 
   async function runChecks() {
     loading = true;
@@ -38,6 +108,74 @@
       };
     } finally {
       loading = false;
+    }
+    await loadWorkflows();
+  }
+
+  async function submitWorkflow() {
+    workflowsError = "";
+    workflowsInfo = "";
+    if (!form.name.trim()) {
+      workflowsError = "validation_error: name is required";
+      return;
+    }
+
+    const endpoint =
+      editingId == null ? `${apiBaseUrl()}/workflows` : `${apiBaseUrl()}/workflows/${editingId}`;
+    const method = editingId == null ? "POST" : "PUT";
+
+    try {
+      const response = await fetch(endpoint, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+
+      if (!response.ok) {
+        workflowsError = await readErrorMessage(response);
+        return;
+      }
+
+      workflowsInfo = editingId == null ? "Workflow cree." : "Workflow mis a jour.";
+      resetForm();
+      await loadWorkflows();
+    } catch (e) {
+      workflowsError = `Erreur reseau: ${String(e)}`;
+    }
+  }
+
+  function startEdit(w: Workflow) {
+    editingId = w.id;
+    form = {
+      name: w.name,
+      description: w.description,
+      is_active: w.is_active,
+    };
+  }
+
+  async function removeWorkflow(w: Workflow) {
+    const ok = window.confirm(`Supprimer le workflow \"${w.name}\" ?`);
+    if (!ok) {
+      return;
+    }
+
+    workflowsError = "";
+    workflowsInfo = "";
+    try {
+      const response = await fetch(`${apiBaseUrl()}/workflows/${w.id}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) {
+        workflowsError = await readErrorMessage(response);
+        return;
+      }
+      workflowsInfo = "Workflow supprime.";
+      if (editingId === w.id) {
+        resetForm();
+      }
+      await loadWorkflows();
+    } catch (e) {
+      workflowsError = `Erreur reseau: ${String(e)}`;
     }
   }
 
@@ -78,6 +216,62 @@
     </p>
   </section>
 
+  <section>
+    <h2>Workflows</h2>
+
+    <form class="workflow-form" on:submit|preventDefault={submitWorkflow}>
+      <label>
+        Nom (obligatoire)
+        <input bind:value={form.name} placeholder="Nom du workflow" maxlength="120" required />
+      </label>
+
+      <label>
+        Description
+        <textarea bind:value={form.description} rows="3" placeholder="Description libre" />
+      </label>
+
+      <label class="checkbox">
+        <input type="checkbox" bind:checked={form.is_active} />
+        Workflow actif
+      </label>
+
+      <div class="actions">
+        <button type="submit">{editingId == null ? "Creer" : "Enregistrer"}</button>
+        {#if editingId != null}
+          <button type="button" class="secondary" on:click={resetForm}>Annuler edition</button>
+        {/if}
+      </div>
+    </form>
+
+    {#if workflowsError}<p class="ko">{workflowsError}</p>{/if}
+    {#if workflowsInfo}<p class="ok">{workflowsInfo}</p>{/if}
+
+    {#if workflowsLoading}
+      <p>Chargement des workflows…</p>
+    {:else if workflows.length === 0}
+      <p>Aucun workflow pour l instant.</p>
+    {:else}
+      <ul class="workflow-list">
+        {#each workflows as w}
+          <li>
+            <div>
+              <p class="wf-name">{w.name}</p>
+              <p>{w.description || "(sans description)"}</p>
+              <p>
+                Statut:
+                <strong class={w.is_active ? "ok" : "warn"}>{w.is_active ? "actif" : "inactif"}</strong>
+              </p>
+            </div>
+            <div class="actions">
+              <button type="button" class="secondary" on:click={() => startEdit(w)}>Editer</button>
+              <button type="button" class="danger" on:click={() => removeWorkflow(w)}>Supprimer</button>
+            </div>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
+
   <button on:click={runChecks} disabled={loading}>
     {#if loading}Verification en cours…{:else}Relancer le healthcheck{/if}
   </button>
@@ -111,6 +305,51 @@
     border: 1px solid #ddd;
     border-radius: 6px;
   }
+  .workflow-form {
+    display: grid;
+    gap: 0.75rem;
+  }
+  .workflow-form label {
+    display: grid;
+    gap: 0.35rem;
+    font-size: 0.92rem;
+  }
+  .workflow-form input,
+  .workflow-form textarea {
+    padding: 0.45rem;
+    border: 1px solid #c7c7c7;
+    border-radius: 4px;
+    font: inherit;
+  }
+  .checkbox {
+    display: flex !important;
+    align-items: center;
+    gap: 0.5rem;
+  }
+  .workflow-list {
+    list-style: none;
+    padding: 0;
+    margin: 1rem 0 0;
+    display: grid;
+    gap: 0.75rem;
+  }
+  .workflow-list li {
+    border: 1px solid #ddd;
+    border-radius: 6px;
+    padding: 0.75rem;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
+  .wf-name {
+    font-weight: 700;
+    margin: 0;
+  }
+  .actions {
+    display: flex;
+    align-items: start;
+    gap: 0.5rem;
+  }
   h2 {
     margin-top: 0;
     font-size: 1rem;
@@ -127,6 +366,13 @@
   .ok   { color: #0a7d2d; }
   .ko   { color: #b12020; }
   .warn { color: #a06000; }
+  .secondary {
+    background: #efefef;
+  }
+  .danger {
+    background: #f7d8d8;
+    border-color: #da8a8a;
+  }
   button {
     margin-top: 0.5rem;
     padding: 0.5rem 1.2rem;
