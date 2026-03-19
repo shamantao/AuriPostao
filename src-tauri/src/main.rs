@@ -9,6 +9,7 @@ mod errors;
 mod logger;
 mod paths;
 
+use config::AppConfig;
 use errors::AppError;
 use serde::Serialize;
 use std::time::Duration;
@@ -82,6 +83,57 @@ fn healthcheck() -> Result<ApiHealthStatus, String> {
     }
 }
 
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize)]
+struct BootstrapStatus {
+    app_version: String,
+    db_path: String,
+    db_exists: bool,
+    mode: String,
+}
+
+#[tauri::command]
+fn bootstrap_status(cfg: tauri::State<AppConfig>) -> Result<BootstrapStatus, String> {
+    let api_url = std::env::var("AURIPOSTAO_API_URL")
+        .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+    let bootstrap_url = format!("{}/bootstrap", api_url.trim_end_matches('/'));
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(2))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))?;
+
+    let (db_path, mode) = match client.get(&bootstrap_url).send() {
+        Ok(resp) if resp.status().is_success() => {
+            let json: serde_json::Value = resp
+                .json()
+                .map_err(|e| format!("invalid /bootstrap JSON: {e}"))?;
+            let db = json
+                .get("db_path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("inconnu")
+                .to_string();
+            let m = json
+                .get("mode")
+                .and_then(|v| v.as_str())
+                .unwrap_or("debug")
+                .to_string();
+            (db, m)
+        }
+        _ => ("API non joignable".to_string(), cfg.app.mode.clone()),
+    };
+
+    let db_exists = std::path::Path::new(&db_path).exists();
+
+    Ok(BootstrapStatus {
+        app_version: cfg.app.version.clone(),
+        db_path,
+        db_exists,
+        mode,
+    })
+}
+
 fn main() -> Result<(), AppError> {
     // 1. Load merged config (default → user → project → runtime)
     let cfg = config::load()?;
@@ -137,7 +189,7 @@ fn main() -> Result<(), AppError> {
         .manage(cfg)
         .manage(paths)
         .manage(api_process)
-        .invoke_handler(tauri::generate_handler![healthcheck])
+        .invoke_handler(tauri::generate_handler![healthcheck, bootstrap_status])
         .run(tauri::generate_context!())
         .map_err(|e| AppError::Tauri(e.to_string()))
 }
