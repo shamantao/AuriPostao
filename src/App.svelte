@@ -42,6 +42,7 @@
   let workflowsError = "";
   let workflowsInfo = "";
   let editingId: number | null = null;
+  let pendingDeleteId: number | null = null;
   let form: WorkflowForm = {
     name: "",
     description: "",
@@ -143,16 +144,12 @@
   }
 
   async function removeWorkflow(w: Workflow) {
-    const ok = window.confirm(`Supprimer le workflow \"${w.name}\" ?`);
-    if (!ok) {
-      return;
-    }
-
     workflowsError = "";
     workflowsInfo = "";
     try {
       await invoke<boolean>("workflows_delete", { workflowId: w.id });
       workflowsInfo = "Workflow supprime.";
+      pendingDeleteId = null;
       if (editingId === w.id) {
         resetForm();
       }
@@ -247,7 +244,12 @@
             </div>
             <div class="actions">
               <button type="button" class="secondary" on:click={() => startEdit(w)}>Editer</button>
-              <button type="button" class="danger" on:click={() => removeWorkflow(w)}>Supprimer</button>
+              {#if pendingDeleteId === w.id}
+                <button type="button" class="danger" on:click={() => removeWorkflow(w)}>Confirmer</button>
+                <button type="button" class="secondary" on:click={() => (pendingDeleteId = null)}>Annuler</button>
+              {:else}
+                <button type="button" class="danger" on:click={() => (pendingDeleteId = w.id)}>Supprimer</button>
+              {/if}
             </div>
           </li>
         {/each}
