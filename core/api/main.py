@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -50,6 +51,16 @@ class ChannelDummyUpdate(BaseModel):
     enabled: bool
 
 
+class IngestionPreviewRequest(BaseModel):
+    file_paths: list[str] = []
+    directory_path: str | None = None
+    recursive: bool = False
+    max_file_size_bytes: int = Field(default=1_000_000, ge=1)
+
+
+TEXT_EXTENSIONS = {".txt", ".md"}
+
+
 def _utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -90,6 +101,91 @@ def _has_valid_channel(conn: sqlite3.Connection) -> bool:
         "SELECT COUNT(1) AS total FROM channel_configs WHERE is_enabled = 1"
     ).fetchone()
     return bool(row["total"])
+
+
+def _decode_text(data: bytes) -> tuple[str, str]:
+    try:
+        return data.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        # MVP fallback for legacy local files.
+        return data.decode("latin-1"), "latin-1"
+
+
+def _ingestion_preview(payload: IngestionPreviewRequest) -> dict[str, Any]:
+    accepted: list[dict[str, Any]] = []
+    ignored: list[dict[str, str]] = []
+    errors: list[dict[str, str]] = []
+    candidates: list[Path] = []
+
+    for raw in payload.file_paths:
+        p = Path(raw).expanduser()
+        if not p.exists():
+            errors.append({"path": str(p), "reason": "not_found"})
+            continue
+        if p.is_dir():
+            ignored.append({"path": str(p), "reason": "is_directory"})
+            continue
+        candidates.append(p)
+
+    if payload.directory_path:
+        root = Path(payload.directory_path).expanduser()
+        if not root.exists():
+            errors.append({"path": str(root), "reason": "directory_not_found"})
+        elif not root.is_dir():
+            errors.append({"path": str(root), "reason": "not_a_directory"})
+        else:
+            iterator = root.rglob("*") if payload.recursive else root.glob("*")
+            for p in iterator:
+                if p.is_file():
+                    candidates.append(p)
+
+    seen: set[str] = set()
+    unique_candidates: list[Path] = []
+    for p in candidates:
+        key = str(p.resolve()) if p.exists() else str(p)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique_candidates.append(p)
+
+    for p in unique_candidates:
+        suffix = p.suffix.lower()
+        if suffix not in TEXT_EXTENSIONS:
+            ignored.append({"path": str(p), "reason": "non_text_extension"})
+            continue
+        try:
+            size = p.stat().st_size
+        except OSError as exc:
+            errors.append({"path": str(p), "reason": f"stat_error: {exc}"})
+            continue
+        if size > payload.max_file_size_bytes:
+            ignored.append({"path": str(p), "reason": "file_too_large"})
+            continue
+        try:
+            raw_data = p.read_bytes()
+            text, encoding = _decode_text(raw_data)
+            accepted.append(
+                {
+                    "path": str(p),
+                    "size_bytes": size,
+                    "encoding": encoding,
+                    "preview": text[:400],
+                }
+            )
+        except OSError as exc:
+            errors.append({"path": str(p), "reason": f"read_error: {exc}"})
+
+    return {
+        "accepted_files": accepted,
+        "ignored_files": ignored,
+        "errors": errors,
+        "summary": {
+            "accepted": len(accepted),
+            "ignored": len(ignored),
+            "errors": len(errors),
+            "total_candidates": len(unique_candidates),
+        },
+    }
 
 
 @app.exception_handler(HTTPException)
@@ -293,6 +389,11 @@ def set_dummy_channel(payload: ChannelDummyUpdate) -> dict[str, Any]:
         "valid_channels": valid_channels,
         "config_url": "#channels-config",
     }
+
+
+@app.post("/ingestion/preview")
+def ingestion_preview(payload: IngestionPreviewRequest) -> dict[str, Any]:
+    return _ingestion_preview(payload)
 
 
 @app.get("/workflows")

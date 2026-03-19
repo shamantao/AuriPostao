@@ -276,5 +276,103 @@ class ApiWorkflowChannelsTests(unittest.TestCase):
         self.assertEqual(resp.json()["code"], "channel_not_found")
 
 
+class ApiIngestionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "auripostao.db")
+        self.original_db_path = api_main.DB_PATH
+        api_main.DB_PATH = self.db_path
+        init_db(self.db_path)
+        self.client = TestClient(app)
+        self.sources_dir = Path(self.tmpdir.name) / "sources"
+        self.sources_dir.mkdir(parents=True, exist_ok=True)
+
+    def tearDown(self) -> None:
+        api_main.DB_PATH = self.original_db_path
+        self.tmpdir.cleanup()
+
+    def test_multi_files_utf8_and_non_text_ignored(self) -> None:
+        file_txt = self.sources_dir / "a.txt"
+        file_md = self.sources_dir / "b.md"
+        file_png = self.sources_dir / "c.png"
+        file_latin1 = self.sources_dir / "latin1.txt"
+
+        file_txt.write_text("hello utf8", encoding="utf-8")
+        file_md.write_text("# titre", encoding="utf-8")
+        file_png.write_bytes(b"\x89PNG")
+        file_latin1.write_bytes("cafe\xe9".encode("latin-1"))
+
+        resp = self.client.post(
+            "/ingestion/preview",
+            json={
+                "file_paths": [
+                    str(file_txt),
+                    str(file_md),
+                    str(file_png),
+                    str(file_latin1),
+                ],
+                "recursive": False,
+                "max_file_size_bytes": 1024,
+            },
+        )
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+
+        accepted_paths = {item["path"] for item in body["accepted_files"]}
+        self.assertIn(str(file_txt), accepted_paths)
+        self.assertIn(str(file_md), accepted_paths)
+        self.assertIn(str(file_latin1), accepted_paths)
+        self.assertEqual(body["summary"]["accepted"], 3)
+
+        latin = next(item for item in body["accepted_files"] if item["path"] == str(file_latin1))
+        self.assertEqual(latin["encoding"], "latin-1")
+
+        ignored = {(item["path"], item["reason"]) for item in body["ignored_files"]}
+        self.assertIn((str(file_png), "non_text_extension"), ignored)
+
+    def test_directory_recursive_and_size_limit(self) -> None:
+        nested = self.sources_dir / "nested"
+        nested.mkdir(parents=True, exist_ok=True)
+        root_file = self.sources_dir / "root.txt"
+        deep_file = nested / "deep.txt"
+        too_large = self.sources_dir / "large.txt"
+
+        root_file.write_text("root", encoding="utf-8")
+        deep_file.write_text("deep", encoding="utf-8")
+        too_large.write_text("x" * 64, encoding="utf-8")
+
+        non_recursive = self.client.post(
+            "/ingestion/preview",
+            json={
+                "directory_path": str(self.sources_dir),
+                "recursive": False,
+                "max_file_size_bytes": 8,
+            },
+        )
+        self.assertEqual(non_recursive.status_code, 200)
+        body_non_recursive = non_recursive.json()
+        accepted_non_recursive = {item["path"] for item in body_non_recursive["accepted_files"]}
+        self.assertIn(str(root_file), accepted_non_recursive)
+        self.assertNotIn(str(deep_file), accepted_non_recursive)
+        ignored_non_recursive = {
+            (item["path"], item["reason"]) for item in body_non_recursive["ignored_files"]
+        }
+        self.assertIn((str(too_large), "file_too_large"), ignored_non_recursive)
+
+        recursive = self.client.post(
+            "/ingestion/preview",
+            json={
+                "directory_path": str(self.sources_dir),
+                "recursive": True,
+                "max_file_size_bytes": 1024,
+            },
+        )
+        self.assertEqual(recursive.status_code, 200)
+        body_recursive = recursive.json()
+        accepted_recursive = {item["path"] for item in body_recursive["accepted_files"]}
+        self.assertIn(str(root_file), accepted_recursive)
+        self.assertIn(str(deep_file), accepted_recursive)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -129,6 +129,22 @@ struct WorkflowChannelsInput {
 }
 
 #[derive(Debug, Serialize, Deserialize)]
+struct IngestionPreviewInput {
+    file_paths: Vec<String>,
+    directory_path: Option<String>,
+    recursive: bool,
+    max_file_size_bytes: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct IngestionPreviewResponse {
+    accepted_files: Vec<serde_json::Value>,
+    ignored_files: Vec<serde_json::Value>,
+    errors: Vec<serde_json::Value>,
+    summary: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
 struct WorkflowUpdateInput {
     name: Option<String>,
     description: Option<String>,
@@ -384,6 +400,25 @@ fn workflow_channels_set(workflow_id: i64, channels: Vec<String>) -> Result<Vec<
     Ok(data.channels)
 }
 
+#[tauri::command]
+fn ingestion_preview(payload: IngestionPreviewInput) -> Result<IngestionPreviewResponse, String> {
+    let api_url = api_base_url();
+    let url = format!("{}/ingestion/preview", api_url.trim_end_matches('/'));
+    let client = build_client()?;
+    let resp = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for ingestion_preview: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid ingestion_preview JSON response: {e}"))
+}
+
 fn main() -> Result<(), AppError> {
     // 1. Load merged config (default → user → project → runtime)
     let cfg = config::load()?;
@@ -454,7 +489,8 @@ fn main() -> Result<(), AppError> {
             channels_status,
             channels_set_dummy,
             workflow_channels_get,
-            workflow_channels_set
+            workflow_channels_set,
+            ingestion_preview
         ])
         .run(tauri::generate_context!())
         .map_err(|e| AppError::Tauri(e.to_string()))
