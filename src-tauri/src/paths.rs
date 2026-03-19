@@ -9,9 +9,10 @@ use crate::errors::AppError;
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct RuntimePaths {
-    pub temp_dir:    PathBuf,
-    pub logs_dir:    PathBuf,
+    pub temp_dir: PathBuf,
+    pub logs_dir: PathBuf,
     pub reports_dir: PathBuf,
 }
 
@@ -21,23 +22,28 @@ pub struct RuntimePaths {
 pub fn build(cfg: &AppConfig) -> Result<RuntimePaths, AppError> {
     let pm = &cfg.path_manager;
 
-    let temp_dir    = normalize(&pm.temp_dir);
-    let logs_dir    = normalize(&pm.logs_dir);
+    let temp_dir = normalize(&pm.temp_dir);
+    let logs_dir = normalize(&pm.logs_dir);
     let reports_dir = normalize(&pm.reports_dir);
 
-    create_dir_safe(&temp_dir,    &pm.allowed_roots)?;
-    create_dir_safe(&logs_dir,    &pm.allowed_roots)?;
+    create_dir_safe(&temp_dir, &pm.allowed_roots)?;
+    create_dir_safe(&logs_dir, &pm.allowed_roots)?;
     create_dir_safe(&reports_dir, &pm.allowed_roots)?;
 
-    Ok(RuntimePaths { temp_dir, logs_dir, reports_dir })
+    Ok(RuntimePaths {
+        temp_dir,
+        logs_dir,
+        reports_dir,
+    })
 }
 
 /// Resolve a candidate output path, applying the collision strategy.
+#[allow(dead_code)]
 pub fn resolve_output(
-    source:     &Path,
+    source: &Path,
     output_dir: &Path,
-    extension:  &str,
-    strategy:   &str,
+    extension: &str,
+    strategy: &str,
 ) -> Result<PathBuf, AppError> {
     let stem = source
         .file_stem()
@@ -76,15 +82,15 @@ pub fn resolve_output(
             let hash = format!("{:08x}", h.finish());
             Ok(output_dir.join(format!("{stem}_{hash}.{extension}")))
         }
-        other => Err(AppError::Path(format!("unknown collision strategy: {other}"))),
+        other => Err(AppError::Path(format!(
+            "unknown collision strategy: {other}"
+        ))),
     }
 }
 
 /// Ensure a path is inside at least one of the allowed roots (path traversal guard).
 pub fn ensure_within_allowed(path: &Path, allowed_roots: &[PathBuf]) -> Result<(), AppError> {
-    let canonical = path
-        .canonicalize()
-        .unwrap_or_else(|_| path.to_path_buf());
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
 
     for root in allowed_roots {
         let root_canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
@@ -106,9 +112,7 @@ fn normalize(p: &Path) -> PathBuf {
     if p.is_absolute() {
         p.to_path_buf()
     } else {
-        std::env::current_dir()
-            .unwrap_or_default()
-            .join(p)
+        std::env::current_dir().unwrap_or_default().join(p)
     }
 }
 

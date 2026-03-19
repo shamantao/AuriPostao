@@ -4,6 +4,7 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+PATTERN="(api[_-]?key[[:space:]]*[:=]|secret(_key)?[[:space:]]*[:=]|token[[:space:]]*[:=]|password[[:space:]]*[:=]|BEGIN[[:space:]]+(RSA|EC|OPENSSH|DSA)[[:space:]]+PRIVATE[[:space:]]+KEY)"
 
 echo ""
 echo "=== Secret scan ==="
@@ -23,19 +24,32 @@ echo "gitleaks not found; using fallback regex scan..."
 
 if command -v rg >/dev/null 2>&1; then
   if rg -n -i \
-    "(api[_-]?key|secret|token|password|private[_-]?key|BEGIN[[:space:]]+RSA[[:space:]]+PRIVATE[[:space:]]+KEY)" \
+    "$PATTERN" \
     "$PROJECT_DIR" \
+    --glob '!.git/**' \
+    --glob '!.venv/**' \
+    --glob '!node_modules/**' \
+    --glob '!dist/**' \
     --glob '!logs/**' \
     --glob '!.tmp/**' \
     --glob '!reports/**' \
-    --glob '!.git/**' \
+    --glob '!src-tauri/target/**' \
     --glob '!tests/fixtures/**'; then
     echo "Potential secrets detected. Review before commit."
     exit 1
   fi
 else
   if grep -RInE \
-    "api[_-]?key|secret|token|password|private[_-]?key|BEGIN[[:space:]]+RSA[[:space:]]+PRIVATE[[:space:]]+KEY" \
+    "$PATTERN" \
+    --exclude-dir=.git \
+    --exclude-dir=.venv \
+    --exclude-dir=node_modules \
+    --exclude-dir=dist \
+    --exclude-dir=logs \
+    --exclude-dir=.tmp \
+    --exclude-dir=reports \
+    --exclude-dir=target \
+    --exclude-dir=fixtures \
     "$PROJECT_DIR"; then
     echo "Potential secrets detected. Review before commit."
     exit 1

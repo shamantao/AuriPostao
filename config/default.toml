@@ -1,10 +1,12 @@
-# AuriPostao_tao_seed - Default Configuration
+# AuriPostao - Default Configuration
 # Template version: 1.0.0
 #
 # Layer priority (highest wins):
-#   default (this file) → user (~/.config/<app>/user.toml) → project (./<app>.toml) → runtime (env/flags)
+#   default (this file) → user (~/.config/auripostao/user.toml)
+#   → config/config.toml (local machine, git-ignored)
+#   → runtime (env vars APP__ prefix)
 #
-# Do NOT commit user.toml to version control.
+# For local overrides (paths, secrets): copy values into config/config.toml (git-ignored).
 
 # ---------------------------------------------------------------------------
 [app]
@@ -15,35 +17,31 @@ language   = "fr"
 
 # ---------------------------------------------------------------------------
 [config]
-schema_version      = 1
+schema_version       = 1
 enable_layered_merge = true
 # strict_mode = true will make startup fail on any unknown config key.
-strict_mode         = false
+strict_mode          = false
 
 # ---------------------------------------------------------------------------
 [path_manager]
 # Restrict ALL write operations to these root directories.
-# Any path outside these roots will be rejected at runtime.
-allowed_roots = [
-  "$HOME/Downloads",
-  "/Users/phil/Library/CloudStorage/Dropbox/devwww/app/AuriPostao"
-]
+# In debug mode, an empty list disables the sandbox.
+# In normal mode, this list must not be empty.
+allowed_roots = []
 
 # Runtime directories — created automatically on first run.
-temp_dir    = "/Users/phil/Library/CloudStorage/Dropbox/devwww/app/AuriPostao_tao_seed/.tmp"
-logs_dir    = "/Users/phil/Library/CloudStorage/Dropbox/devwww/app/AuriPostao_tao_seed/logs"
-reports_dir = "/Users/phil/Library/CloudStorage/Dropbox/devwww/app/AuriPostao_tao_seed/reports"
+# Override in config/config.toml with absolute paths if needed.
+temp_dir    = ".tmp"
+logs_dir    = "logs"
+reports_dir = "reports"
 
-# Collision strategy when output file already exists.
-# Options: increment | suffix | short_hash
-collision_strategy = "increment"
-
-normalize_unicode = false
-trim_whitespace   = true
+collision_strategy = "increment"   # increment | suffix | short_hash
+normalize_unicode  = false
+trim_whitespace    = true
 
 # ---------------------------------------------------------------------------
 [logger]
-level         = "info"  # trace | debug | info | warn | error
+level          = "info"   # trace | debug | info | warn | error
 console_pretty = true
 file_json      = true
 
@@ -51,12 +49,11 @@ rotation_enabled = true
 max_file_mb      = 20
 max_files        = 5
 
-# Attach job_id and correlation_id to every log event.
 include_context_ids = true
 
 # ---------------------------------------------------------------------------
 [reporting]
-enabled           = true
-json_report       = true
-csv_report        = true
-include_failed    = true
+enabled        = true
+json_report    = true
+csv_report     = true
+include_failed = true

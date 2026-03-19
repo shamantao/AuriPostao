@@ -17,6 +17,9 @@ FAIL=0
 
 ok()   { echo "  [OK]  $1"; PASS=$((PASS+1)); }
 fail() { echo "  [FAIL] $1"; FAIL=$((FAIL+1)); }
+has_doc() {
+  [[ -f "$PROJECT_DIR/DOCS/$1" || -f "$PROJECT_DIR/docs/$1" ]]
+}
 
 echo ""
 echo "=== Healthcheck: $PROJECT_NAME ==="
@@ -29,8 +32,8 @@ echo "-- Core structure --"
 [[ -d "$PROJECT_DIR/reports" ]]             && ok "reports/ directory exists"   || fail "reports/ missing (run init first)"
 [[ -f "$PROJECT_DIR/README.md" ]]           && ok "README.md exists"            || fail "README.md missing"
 [[ -f "$PROJECT_DIR/LICENSE" ]]             && ok "LICENSE exists"              || fail "LICENSE missing"
-[[ -f "$PROJECT_DIR/docs/ARCHITECTURE.md" ]] && ok "ARCHITECTURE.md exists"     || fail "docs/ARCHITECTURE.md missing"
-[[ -f "$PROJECT_DIR/docs/SECURITY.md" ]]     && ok "SECURITY.md exists"         || fail "docs/SECURITY.md missing"
+has_doc "ARCHITECTURE.md"                  && ok "ARCHITECTURE.md exists"       || fail "ARCHITECTURE.md missing"
+has_doc "SECURITY.md"                      && ok "SECURITY.md exists"           || fail "SECURITY.md missing"
 [[ -f "$PROJECT_DIR/scripts/check-secrets.sh" ]] && ok "check-secrets.sh exists" || fail "scripts/check-secrets.sh missing"
 [[ -f "$PROJECT_DIR/scripts/test-integrity.sh" ]] && ok "test-integrity.sh exists" || fail "scripts/test-integrity.sh missing"
 [[ -f "$PROJECT_DIR/scripts/test-dependencies.sh" ]] && ok "test-dependencies.sh exists" || fail "scripts/test-dependencies.sh missing"
@@ -39,6 +42,7 @@ echo ""
 echo "-- Baseline checks --"
 bash "$PROJECT_DIR/scripts/test-integrity.sh" && ok "integrity checks passed" || fail "integrity checks failed"
 bash "$PROJECT_DIR/scripts/test-dependencies.sh" && ok "dependency checks passed" || fail "dependency checks failed"
+bash "$PROJECT_DIR/scripts/check-secrets.sh" && ok "secret checks passed" || fail "secret checks failed"
 
 # --- Stack-specific checks ---
 if [[ "$STACK" == "tauri-rust" ]] || [[ -f "$PROJECT_DIR/src-tauri/Cargo.toml" ]]; then

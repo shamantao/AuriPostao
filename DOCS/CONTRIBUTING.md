@@ -1,7 +1,19 @@
 # Contributing
 
+## Branching model
+- Default protected branch: `main`
+- Working branches follow this convention:
+	- `feat/<scope>` for features
+	- `fix/<scope>` for bug fixes
+	- `chore/<scope>` for maintenance
+
+## Pull requests
+- Direct push to `main` is blocked by branch protection.
+- At least 1 approving review is required before merge.
+- Conversation resolution is required before merge.
+
 ## Code style
-- Follow conventions documented in `docs/`.
+- Follow conventions documented in `DOCS/`.
 - Keep modules with single responsibilities.
 
 ## Commits
@@ -9,10 +21,10 @@
 - Reference issue numbers when applicable.
 
 ## Testing
+- Install local hooks once per clone:
+  - `npm run hooks:install`
 - Run baseline checks before committing:
-	- `bash scripts/test-integrity.sh`
-	- `bash scripts/test-dependencies.sh`
-	- `bash scripts/healthcheck.sh --stack <stack>`
+  - `npm run check:baseline`
 - Project-specific unit/integration/E2E tests are defined by each project team.
 
 ## Security checks
