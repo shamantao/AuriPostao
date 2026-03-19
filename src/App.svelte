@@ -86,6 +86,7 @@
   let ingestionLoading = false;
   let ingestionError = "";
   let ingestionInfo = "";
+  let ingestionWarning = "";
   let ingestionPreview: IngestionPreview | null = null;
   let form: WorkflowForm = {
     name: "",
@@ -266,6 +267,7 @@
 
   async function pickFiles() {
     ingestionError = "";
+    ingestionWarning = "";
     try {
       const picked = await invoke<string[]>("pick_text_files");
       if (picked.length === 0) {
@@ -281,6 +283,7 @@
 
   async function pickDirectory() {
     ingestionError = "";
+    ingestionWarning = "";
     try {
       const picked = await invoke<string | null>("pick_directory");
       sourceDirectory = picked ?? "";
@@ -293,6 +296,7 @@
   }
 
   function removeSourceFile(path: string) {
+    ingestionWarning = "";
     sourceFiles = sourceFiles.filter((p) => p !== path);
     if (sourceFiles.length === 0) {
       ingestionInfo = "Aucun fichier selectionne.";
@@ -302,6 +306,7 @@
   }
 
   function clearSourceDirectory() {
+    ingestionWarning = "";
     sourceDirectory = "";
   }
 
@@ -309,12 +314,14 @@
     sourceFiles = [];
     sourceDirectory = "";
     ingestionPreview = null;
+    ingestionWarning = "";
     ingestionInfo = "Sources reinitialisees.";
   }
 
   async function runIngestionPreview() {
     ingestionError = "";
     ingestionInfo = "";
+    ingestionWarning = "";
     ingestionPreview = null;
 
     if (sourceFiles.length === 0 && !sourceDirectory) {
@@ -332,7 +339,22 @@
           max_file_size_bytes: maxFileSizeBytes,
         },
       });
-      ingestionInfo = "Apercu ingestion genere.";
+
+      const tooLargeFiles = ingestionPreview.ignored_files.filter(
+        (item) => item.reason === "file_too_large"
+      );
+      if (tooLargeFiles.length > 0) {
+        ingestionWarning =
+          `${tooLargeFiles.length} fichier(s) depassent le seuil de taille ` +
+          `(${formatBytes(maxFileSizeBytes)} max par fichier).`;
+      }
+
+      if (ingestionPreview.summary.accepted === 0) {
+        ingestionError =
+          "Aucune source valide detectee. Ajoute au moins un fichier texte (.txt/.md) lisible sous le seuil de taille.";
+      } else {
+        ingestionInfo = "Apercu ingestion genere.";
+      }
     } catch (e) {
       ingestionError = invokeError(e);
     } finally {
@@ -526,6 +548,7 @@
     </div>
 
     {#if ingestionError}<p class="ko">{ingestionError}</p>{/if}
+    {#if ingestionWarning}<p class="warn">{ingestionWarning}</p>{/if}
     {#if ingestionInfo}<p class="ok">{ingestionInfo}</p>{/if}
 
     {#if ingestionPreview}
