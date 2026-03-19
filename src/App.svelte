@@ -64,6 +64,7 @@
       ignored: number;
       errors: number;
       total_candidates: number;
+      total_size_bytes: number;
     };
   };
 
@@ -109,6 +110,10 @@
       return `${(value / 1024).toFixed(1)} KB`;
     }
     return `${(value / (1024 * 1024)).toFixed(1)} MB`;
+  }
+
+  function dedupePaths(paths: string[]): string[] {
+    return [...new Set(paths)];
   }
 
   function resetForm() {
@@ -263,8 +268,12 @@
     ingestionError = "";
     try {
       const picked = await invoke<string[]>("pick_text_files");
-      sourceFiles = picked;
-      ingestionInfo = picked.length ? `${picked.length} fichier(s) selectionne(s).` : "Aucun fichier selectionne.";
+      if (picked.length === 0) {
+        ingestionInfo = "Aucun fichier selectionne.";
+        return;
+      }
+      sourceFiles = dedupePaths([...sourceFiles, ...picked]);
+      ingestionInfo = `${sourceFiles.length} fichier(s) selectionne(s).`;
     } catch (e) {
       ingestionError = invokeError(e);
     }
@@ -281,6 +290,26 @@
     } catch (e) {
       ingestionError = invokeError(e);
     }
+  }
+
+  function removeSourceFile(path: string) {
+    sourceFiles = sourceFiles.filter((p) => p !== path);
+    if (sourceFiles.length === 0) {
+      ingestionInfo = "Aucun fichier selectionne.";
+    } else {
+      ingestionInfo = `${sourceFiles.length} fichier(s) selectionne(s).`;
+    }
+  }
+
+  function clearSourceDirectory() {
+    sourceDirectory = "";
+  }
+
+  function clearAllSources() {
+    sourceFiles = [];
+    sourceDirectory = "";
+    ingestionPreview = null;
+    ingestionInfo = "Sources reinitialisees.";
   }
 
   async function runIngestionPreview() {
@@ -458,18 +487,27 @@
     <div class="actions">
       <button type="button" on:click={pickFiles}>Picker fichiers texte</button>
       <button type="button" class="secondary" on:click={pickDirectory}>Picker dossier</button>
+      <button type="button" class="secondary" on:click={clearAllSources}>Reinitialiser sources</button>
     </div>
 
     <p>Fichiers selectionnes: {sourceFiles.length}</p>
     {#if sourceFiles.length > 0}
       <ul class="source-list">
         {#each sourceFiles as filePath}
-          <li>{filePath}</li>
+          <li class="source-row">
+            <span>{filePath}</span>
+            <button type="button" class="secondary mini" on:click={() => removeSourceFile(filePath)}>
+              Retirer
+            </button>
+          </li>
         {/each}
       </ul>
     {/if}
 
     <p>Dossier selectionne: {sourceDirectory || "(aucun)"}</p>
+    {#if sourceDirectory}
+      <button type="button" class="secondary mini" on:click={clearSourceDirectory}>Retirer dossier</button>
+    {/if}
 
     <label class="checkbox">
       <input type="checkbox" bind:checked={includeSubdirs} />
@@ -494,7 +532,8 @@
       <div class="preview-box">
         <p>
           Resume: {ingestionPreview.summary.accepted} accepte(s), {ingestionPreview.summary.ignored} ignore(s),
-          {ingestionPreview.summary.errors} erreur(s), {ingestionPreview.summary.total_candidates} candidat(s)
+          {ingestionPreview.summary.errors} erreur(s), {ingestionPreview.summary.total_candidates} candidat(s),
+          taille totale {formatBytes(ingestionPreview.summary.total_size_bytes)}
         </p>
 
         {#if ingestionPreview.accepted_files.length > 0}
@@ -618,6 +657,12 @@
     margin: 0.5rem 0;
     padding-left: 1.2rem;
   }
+  .source-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.75rem;
+  }
   .preview-box {
     margin-top: 0.75rem;
     border: 1px solid #ddd;
@@ -669,5 +714,10 @@
     padding: 0.5rem 1.2rem;
     font-size: 0.95rem;
     cursor: pointer;
+  }
+  .mini {
+    padding: 0.25rem 0.6rem;
+    font-size: 0.8rem;
+    margin-top: 0;
   }
 </style>

@@ -184,6 +184,7 @@ def _ingestion_preview(payload: IngestionPreviewRequest) -> dict[str, Any]:
             "ignored": len(ignored),
             "errors": len(errors),
             "total_candidates": len(unique_candidates),
+            "total_size_bytes": sum(item["size_bytes"] for item in accepted),
         },
     }
 

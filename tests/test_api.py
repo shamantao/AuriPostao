@@ -323,6 +323,7 @@ class ApiIngestionTests(unittest.TestCase):
         self.assertIn(str(file_md), accepted_paths)
         self.assertIn(str(file_latin1), accepted_paths)
         self.assertEqual(body["summary"]["accepted"], 3)
+        self.assertEqual(body["summary"]["total_size_bytes"], 22)
 
         latin = next(item for item in body["accepted_files"] if item["path"] == str(file_latin1))
         self.assertEqual(latin["encoding"], "latin-1")
@@ -372,6 +373,7 @@ class ApiIngestionTests(unittest.TestCase):
         accepted_recursive = {item["path"] for item in body_recursive["accepted_files"]}
         self.assertIn(str(root_file), accepted_recursive)
         self.assertIn(str(deep_file), accepted_recursive)
+        self.assertEqual(body_recursive["summary"]["total_size_bytes"], 72)
 
 
 if __name__ == "__main__":
