@@ -1,7 +1,6 @@
 // logger.rs — Structured logging module
 // Dual output: human-readable console + JSON log files with rotation.
 
-use std::path::Path;
 use tracing_appender::non_blocking::WorkerGuard;
 
 use crate::config::LoggerSection;
@@ -10,7 +9,8 @@ use crate::errors::AppError;
 /// Initialize the global tracing subscriber.
 /// Returns the WorkerGuard — caller must keep it alive for the app lifetime.
 pub fn init(cfg: &LoggerSection) -> Result<WorkerGuard, AppError> {
-    let level_filter = cfg.level
+    let level_filter = cfg
+        .level
         .parse::<tracing::Level>()
         .map_err(|_| AppError::Logger(format!("invalid log level: {}", cfg.level)))?;
 
@@ -42,6 +42,7 @@ pub fn init(cfg: &LoggerSection) -> Result<WorkerGuard, AppError> {
 /// let _span = logger::job_span("encode-42", "corr-xyz").entered();
 /// tracing::info!("starting encode");
 /// ```
+#[allow(dead_code)]
 pub fn job_span(job_id: &str, correlation_id: &str) -> tracing::Span {
     tracing::info_span!("job", job_id, correlation_id)
 }

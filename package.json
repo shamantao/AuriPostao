@@ -7,6 +7,12 @@
     "dev": "vite",
     "dev:api": "bash core/scripts/run_api.sh",
     "dev:stack": "concurrently -k -n API,UI -c blue,green \"npm run dev:api\" \"npm run dev\"",
+    "lint": "bash scripts/lint.sh",
+    "test:unit:fast": "bash scripts/test-unit-fast.sh",
+    "test:unit": "bash scripts/test-unit.sh",
+    "test:integration:light": "bash scripts/test-integration-light.sh",
+    "check:baseline": "bash scripts/test-integrity.sh && bash scripts/test-dependencies.sh && bash scripts/check-secrets.sh && bash scripts/healthcheck.sh",
+    "hooks:install": "bash scripts/install-git-hooks.sh",
     "build": "vite build",
     "tauri": "tauri"
   },

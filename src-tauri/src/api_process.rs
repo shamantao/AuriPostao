@@ -77,8 +77,7 @@ pub fn spawn(root: &std::path::Path) -> Result<Child, String> {
 
     // Ensure core/data exists before the API tries to open the DB.
     let data_dir = root.join("core/data");
-    std::fs::create_dir_all(&data_dir)
-        .map_err(|e| format!("cannot create core/data: {e}"))?;
+    std::fs::create_dir_all(&data_dir).map_err(|e| format!("cannot create core/data: {e}"))?;
 
     let db_path = data_dir.join("auripostao.db");
 

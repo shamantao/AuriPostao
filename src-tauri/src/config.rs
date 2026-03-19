@@ -2,7 +2,7 @@
 // Loads and merges TOML layers: default → user → project → runtime
 
 use serde::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::errors::AppError;
 
@@ -10,57 +10,63 @@ use crate::errors::AppError;
 // Schema
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct AppConfig {
-    pub app:          AppSection,
-    pub config:       ConfigSection,
+    pub app: AppSection,
+    pub config: ConfigSection,
     pub path_manager: PathManagerSection,
-    pub logger:       LoggerSection,
-    pub reporting:    ReportingSection,
+    pub logger: LoggerSection,
+    pub reporting: ReportingSection,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct AppSection {
-    pub name:     String,
-    pub version:  String,
-    pub mode:     String,   // "debug" | "normal"
+    pub name: String,
+    pub version: String,
+    pub mode: String, // "debug" | "normal"
     pub language: String,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct ConfigSection {
-    pub schema_version:       u32,
+    pub schema_version: u32,
     pub enable_layered_merge: bool,
-    pub strict_mode:          bool,
+    pub strict_mode: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct PathManagerSection {
-    pub allowed_roots:      Vec<PathBuf>,
-    pub temp_dir:           PathBuf,
-    pub logs_dir:           PathBuf,
-    pub reports_dir:        PathBuf,
-    pub collision_strategy: String,   // "increment" | "suffix" | "short_hash"
-    pub normalize_unicode:  bool,
-    pub trim_whitespace:    bool,
+    pub allowed_roots: Vec<PathBuf>,
+    pub temp_dir: PathBuf,
+    pub logs_dir: PathBuf,
+    pub reports_dir: PathBuf,
+    pub collision_strategy: String, // "increment" | "suffix" | "short_hash"
+    pub normalize_unicode: bool,
+    pub trim_whitespace: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct LoggerSection {
-    pub level:               String,
-    pub console_pretty:      bool,
-    pub file_json:           bool,
-    pub rotation_enabled:    bool,
-    pub max_file_mb:         u64,
-    pub max_files:           usize,
+    pub level: String,
+    pub console_pretty: bool,
+    pub file_json: bool,
+    pub rotation_enabled: bool,
+    pub max_file_mb: u64,
+    pub max_files: usize,
     pub include_context_ids: bool,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct ReportingSection {
-    pub enabled:         bool,
-    pub json_report:     bool,
-    pub csv_report:      bool,
-    pub include_failed:  bool,
+    pub enabled: bool,
+    pub json_report: bool,
+    pub csv_report: bool,
+    pub include_failed: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -106,10 +112,14 @@ fn bundled_default_path() -> PathBuf {
     p.pop();
     p.push("config");
     p.push("default.toml");
-    if p.exists() { return p; }
+    if p.exists() {
+        return p;
+    }
     // Dev: cargo runs from src-tauri/, config/ is one level up
     let dev = PathBuf::from("../config/default.toml");
-    if dev.exists() { return dev; }
+    if dev.exists() {
+        return dev;
+    }
     // Fallback: relative to CWD (e.g. `tauri dev` from project root)
     PathBuf::from("config/default.toml")
 }
@@ -190,22 +200,43 @@ include_failed  = true
 
     #[test]
     fn validate_rejects_invalid_mode() {
-        let mut cfg: AppConfig = toml::from_str(
+        let cfg: AppConfig = toml::from_str(
             r#"[app]
-name="T" version="0.1.0" mode="bad" language="fr"
+name                = "T"
+version             = "0.1.0"
+mode                = "bad"
+language            = "fr"
+
 [config]
-schema_version=1 enable_layered_merge=true strict_mode=false
+schema_version      = 1
+enable_layered_merge = true
+strict_mode          = false
+
 [path_manager]
-allowed_roots=["/tmp"] temp_dir="/tmp/.tmp" logs_dir="/tmp/logs"
-reports_dir="/tmp/reports" collision_strategy="increment"
-normalize_unicode=false trim_whitespace=true
+allowed_roots      = ["/tmp"]
+temp_dir           = "/tmp/.tmp"
+logs_dir           = "/tmp/logs"
+reports_dir        = "/tmp/reports"
+collision_strategy = "increment"
+normalize_unicode  = false
+trim_whitespace    = true
+
 [logger]
-level="info" console_pretty=true file_json=true rotation_enabled=true
-max_file_mb=20 max_files=5 include_context_ids=true
+level               = "info"
+console_pretty      = true
+file_json           = true
+rotation_enabled    = true
+max_file_mb         = 20
+max_files           = 5
+include_context_ids = true
+
 [reporting]
-enabled=true json_report=true csv_report=true include_failed=true"#,
+enabled         = true
+json_report     = true
+csv_report      = true
+include_failed  = true"#,
         )
-        .unwrap();
+        .expect("should parse invalid-mode fixture");
         assert!(validate(&cfg).is_err());
     }
 }

@@ -26,8 +26,8 @@ struct ApiHealthStatus {
 
 #[tauri::command]
 fn healthcheck() -> Result<ApiHealthStatus, String> {
-    let api_url = std::env::var("AURIPOSTAO_API_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+    let api_url =
+        std::env::var("AURIPOSTAO_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
     let health_url = format!("{}/health", api_url.trim_end_matches('/'));
 
     let client = reqwest::blocking::Client::builder()
@@ -95,8 +95,8 @@ struct BootstrapStatus {
 
 #[tauri::command]
 fn bootstrap_status(cfg: tauri::State<AppConfig>) -> Result<BootstrapStatus, String> {
-    let api_url = std::env::var("AURIPOSTAO_API_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+    let api_url =
+        std::env::var("AURIPOSTAO_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
     let bootstrap_url = format!("{}/bootstrap", api_url.trim_end_matches('/'));
 
     let client = reqwest::blocking::Client::builder()
@@ -145,42 +145,47 @@ fn main() -> Result<(), AppError> {
     let _guard = logger::init(&cfg.logger)?;
 
     // 4. Resolve the API base URL (env override or default)
-    let api_url = std::env::var("AURIPOSTAO_API_URL")
-        .unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
+    let api_url =
+        std::env::var("AURIPOSTAO_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8787".to_string());
 
-    // 5. Spawn the Python API sidecar
+    // 5. Spawn the Python API sidecar — skip if one is already running.
     let root = api_process::project_root();
-    let api_child = match api_process::spawn(&root) {
-        Ok(child) => {
-            tracing::info!(
-                root = root.display().to_string().as_str(),
-                "api sidecar spawned"
-            );
-            // Poll /health for up to 8 s so the first UI call usually succeeds.
-            if api_process::wait_ready(&api_url, std::time::Duration::from_secs(8)) {
-                tracing::info!("api sidecar ready");
-            } else {
-                tracing::warn!(
-                    "api sidecar did not become ready within 8 s — UI will show deconnectee"
+    let api_child = if api_process::wait_ready(&api_url, std::time::Duration::from_millis(500)) {
+        tracing::info!("api already running on {api_url} — reusing existing instance");
+        None // no child to manage; we did not spawn it
+    } else {
+        match api_process::spawn(&root) {
+            Ok(child) => {
+                tracing::info!(
+                    root = root.display().to_string().as_str(),
+                    "api sidecar spawned"
                 );
+                // Poll /health for up to 8 s so the first UI call usually succeeds.
+                if api_process::wait_ready(&api_url, std::time::Duration::from_secs(8)) {
+                    tracing::info!("api sidecar ready");
+                } else {
+                    tracing::warn!(
+                        "api sidecar did not become ready within 8 s — UI will show deconnectee"
+                    );
+                }
+                Some(child)
             }
-            Some(child)
-        }
-        Err(e) => {
-            tracing::warn!(
-                error = e.as_str(),
-                "api sidecar spawn failed — app will start without it"
-            );
-            None
+            Err(e) => {
+                tracing::warn!(
+                    error = e.as_str(),
+                    "api sidecar spawn failed — app will start without it"
+                );
+                None
+            }
         }
     };
     let api_process = api_process::ApiProcess(std::sync::Mutex::new(api_child));
 
     tracing::info!(
-        app    = cfg.app.name.as_str(),
+        app = cfg.app.name.as_str(),
         version = cfg.app.version.as_str(),
-        mode   = cfg.app.mode.as_str(),
-        logs   = paths.logs_dir.display().to_string().as_str(),
+        mode = cfg.app.mode.as_str(),
+        logs = paths.logs_dir.display().to_string().as_str(),
         "startup"
     );
 

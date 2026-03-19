@@ -15,6 +15,22 @@ In another terminal:
 
 bash core/scripts/check_bootstrap.sh
 
+## Run local app stack (UI + API)
+
+npm run tauri dev
+
+This command now starts Vite and the local Python API together.
+
+## Install local Git hooks
+
+npm run hooks:install
+
+This configures Git to use the versioned hooks in .githooks/.
+
+The local gates are:
+- pre-commit: lint + fast unit tests
+- pre-push: baseline checks + full unit tests + light integration
+
 ## GitHub bootstrap and US issue seeding
 
 1. Authenticate GitHub CLI:

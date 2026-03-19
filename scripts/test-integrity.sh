@@ -9,6 +9,9 @@ FAIL=0
 
 ok()   { echo "  [OK]  $1"; PASS=$((PASS+1)); }
 fail() { echo "  [FAIL] $1"; FAIL=$((FAIL+1)); }
+has_doc() {
+  [[ -f "$PROJECT_DIR/DOCS/$1" || -f "$PROJECT_DIR/docs/$1" ]]
+}
 
 echo ""
 echo "=== Integrity Checks ==="
@@ -16,9 +19,9 @@ echo ""
 
 [[ -f "$PROJECT_DIR/README.md" ]] && ok "README.md present" || fail "README.md missing"
 [[ -f "$PROJECT_DIR/LICENSE" ]] && ok "LICENSE present" || fail "LICENSE missing"
-[[ -f "$PROJECT_DIR/docs/ARCHITECTURE.md" ]] && ok "docs/ARCHITECTURE.md present" || fail "docs/ARCHITECTURE.md missing"
-[[ -f "$PROJECT_DIR/docs/SECURITY.md" ]] && ok "docs/SECURITY.md present" || fail "docs/SECURITY.md missing"
-[[ -f "$PROJECT_DIR/CHANGELOG.md" || -f "$PROJECT_DIR/docs/CHANGELOG.md" ]] && ok "CHANGELOG present" || fail "CHANGELOG missing"
+has_doc "ARCHITECTURE.md" && ok "ARCHITECTURE.md present" || fail "ARCHITECTURE.md missing"
+has_doc "SECURITY.md" && ok "SECURITY.md present" || fail "SECURITY.md missing"
+[[ -f "$PROJECT_DIR/CHANGELOG.md" || -f "$PROJECT_DIR/DOCS/CHANGELOG.md" || -f "$PROJECT_DIR/docs/CHANGELOG.md" ]] && ok "CHANGELOG present" || fail "CHANGELOG missing"
 
 if command -v rg >/dev/null 2>&1; then
   if rg -n "\{\{[^}]+\}\}" "$PROJECT_DIR" \
