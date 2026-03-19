@@ -116,7 +116,7 @@
         });
       } else {
         await invoke<Workflow>("workflows_update", {
-          workflow_id: editingId,
+          workflowId: editingId,
           payload: {
             name: form.name,
             description: form.description,
@@ -151,7 +151,7 @@
     workflowsError = "";
     workflowsInfo = "";
     try {
-      await invoke<boolean>("workflows_delete", { workflow_id: w.id });
+      await invoke<boolean>("workflows_delete", { workflowId: w.id });
       workflowsInfo = "Workflow supprime.";
       if (editingId === w.id) {
         resetForm();
