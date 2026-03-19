@@ -102,6 +102,7 @@ struct WorkflowDto {
     is_active: bool,
     created_at: String,
     updated_at: String,
+    channels: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -114,6 +115,17 @@ struct WorkflowCreateInput {
     name: String,
     description: String,
     is_active: bool,
+    channels: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowChannelsResponse {
+    channels: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowChannelsInput {
+    channels: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -322,6 +334,56 @@ fn channels_set_dummy(payload: ChannelDummyInput) -> Result<ChannelStatusDto, St
         .map_err(|e| format!("invalid channels_set_dummy JSON response: {e}"))
 }
 
+#[tauri::command]
+fn workflow_channels_get(workflow_id: i64) -> Result<Vec<String>, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/channels",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_channels_get: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    let data: WorkflowChannelsResponse = resp
+        .json()
+        .map_err(|e| format!("invalid workflow_channels_get JSON response: {e}"))?;
+    Ok(data.channels)
+}
+
+#[tauri::command]
+fn workflow_channels_set(workflow_id: i64, channels: Vec<String>) -> Result<Vec<String>, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/channels",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let payload = WorkflowChannelsInput { channels };
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_channels_set: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    let data: WorkflowChannelsResponse = resp
+        .json()
+        .map_err(|e| format!("invalid workflow_channels_set JSON response: {e}"))?;
+    Ok(data.channels)
+}
+
 fn main() -> Result<(), AppError> {
     // 1. Load merged config (default → user → project → runtime)
     let cfg = config::load()?;
@@ -390,7 +452,9 @@ fn main() -> Result<(), AppError> {
             workflows_update,
             workflows_delete,
             channels_status,
-            channels_set_dummy
+            channels_set_dummy,
+            workflow_channels_get,
+            workflow_channels_set
         ])
         .run(tauri::generate_context!())
         .map_err(|e| AppError::Tauri(e.to_string()))

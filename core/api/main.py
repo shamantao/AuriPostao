@@ -22,6 +22,7 @@ class WorkflowCreate(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = ""
     is_active: bool = True
+    channels: list[str] = Field(min_length=1)
 
 
 class WorkflowUpdate(BaseModel):
@@ -38,6 +39,11 @@ class WorkflowOut(BaseModel):
     is_active: bool
     created_at: str
     updated_at: str
+    channels: list[str] = []
+
+
+class WorkflowChannelsUpdate(BaseModel):
+    channels: list[str] = Field(min_length=1)
 
 
 class ChannelDummyUpdate(BaseModel):
@@ -59,7 +65,7 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
-def _row_to_workflow(row: sqlite3.Row) -> dict[str, Any]:
+def _row_to_workflow(row: sqlite3.Row, channels: list[str] | None = None) -> dict[str, Any]:
     return {
         "id": row["id"],
         "local_user": row["local_user"],
@@ -68,6 +74,7 @@ def _row_to_workflow(row: sqlite3.Row) -> dict[str, Any]:
         "is_active": bool(row["is_active"]),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
+        "channels": channels if channels is not None else [],
     }
 
 
@@ -202,6 +209,28 @@ def init_db(db_path: str) -> int:
                 (2, _utc_now()),
             )
 
+        migration_v3_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 3"
+        ).fetchone()
+
+        if not migration_v3_applied:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_channels (
+                    workflow_id INTEGER NOT NULL,
+                    channel_name TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    PRIMARY KEY (workflow_id, channel_name),
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE,
+                    FOREIGN KEY (channel_name) REFERENCES channel_configs(channel_name) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (3, _utc_now()),
+            )
+
         current_version = conn.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
         ).fetchone()[0]
@@ -276,7 +305,13 @@ def list_workflows() -> dict[str, list[WorkflowOut]]:
             ORDER BY updated_at DESC, id DESC
             """
         ).fetchall()
-    return {"items": [_row_to_workflow(row) for row in rows]}
+        ch_rows = conn.execute(
+            "SELECT workflow_id, channel_name FROM workflow_channels ORDER BY channel_name"
+        ).fetchall()
+    channels_map: dict[int, list[str]] = {}
+    for ch in ch_rows:
+        channels_map.setdefault(ch["workflow_id"], []).append(ch["channel_name"])
+    return {"items": [_row_to_workflow(r, channels_map.get(r["id"], [])) for r in rows]}
 
 
 @app.post("/workflows", status_code=201)
@@ -294,6 +329,11 @@ def create_workflow(payload: WorkflowCreate) -> WorkflowOut:
                     "no_valid_channel",
                     "configure at least one valid channel before creating a workflow",
                 )
+            for ch in payload.channels:
+                if not conn.execute(
+                    "SELECT 1 FROM channel_configs WHERE channel_name = ?", (ch,)
+                ).fetchone():
+                    _api_error(422, "channel_not_found", f"channel '{ch}' does not exist")
             cursor = conn.execute(
                 """
                 INSERT INTO workflows(local_user, name, description, is_active, created_at, updated_at)
@@ -301,19 +341,25 @@ def create_workflow(payload: WorkflowCreate) -> WorkflowOut:
                 """,
                 ("local", name, payload.description, int(payload.is_active), now, now),
             )
+            workflow_id = cursor.lastrowid
+            for ch in payload.channels:
+                conn.execute(
+                    "INSERT INTO workflow_channels(workflow_id, channel_name, created_at) VALUES (?, ?, ?)",
+                    (workflow_id, ch, now),
+                )
             row = conn.execute(
                 """
                 SELECT id, local_user, name, description, is_active, created_at, updated_at
                 FROM workflows WHERE id = ?
                 """,
-                (cursor.lastrowid,),
+                (workflow_id,),
             ).fetchone()
     except sqlite3.IntegrityError as exc:
         if "UNIQUE constraint failed: workflows.local_user, workflows.name" in str(exc):
             _api_error(409, "workflow_name_conflict", "workflow name already exists for local user")
         _api_error(400, "db_integrity_error", str(exc))
 
-    return _row_to_workflow(row)
+    return _row_to_workflow(row, list(payload.channels))
 
 
 @app.put("/workflows/{workflow_id}")
@@ -369,3 +415,39 @@ def delete_workflow(workflow_id: int) -> dict[str, Any]:
     if cursor.rowcount == 0:
         _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
     return {"deleted": True, "id": workflow_id}
+
+
+@app.get("/workflows/{workflow_id}/channels")
+def get_workflow_channels(workflow_id: int) -> dict[str, list[str]]:
+    with _connect() as conn:
+        if conn.execute("SELECT 1 FROM workflows WHERE id = ?", (workflow_id,)).fetchone() is None:
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        rows = conn.execute(
+            "SELECT channel_name FROM workflow_channels WHERE workflow_id = ? ORDER BY channel_name",
+            (workflow_id,),
+        ).fetchall()
+    return {"channels": [r["channel_name"] for r in rows]}
+
+
+@app.put("/workflows/{workflow_id}/channels")
+def set_workflow_channels(workflow_id: int, payload: WorkflowChannelsUpdate) -> dict[str, list[str]]:
+    with _connect() as conn:
+        if conn.execute("SELECT 1 FROM workflows WHERE id = ?", (workflow_id,)).fetchone() is None:
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        for ch in payload.channels:
+            if not conn.execute(
+                "SELECT 1 FROM channel_configs WHERE channel_name = ?", (ch,)
+            ).fetchone():
+                _api_error(422, "channel_not_found", f"channel '{ch}' does not exist")
+        now = _utc_now()
+        conn.execute("DELETE FROM workflow_channels WHERE workflow_id = ?", (workflow_id,))
+        for ch in payload.channels:
+            conn.execute(
+                "INSERT INTO workflow_channels(workflow_id, channel_name, created_at) VALUES (?, ?, ?)",
+                (workflow_id, ch, now),
+            )
+        rows = conn.execute(
+            "SELECT channel_name FROM workflow_channels WHERE workflow_id = ? ORDER BY channel_name",
+            (workflow_id,),
+        ).fetchall()
+    return {"channels": [r["channel_name"] for r in rows]}

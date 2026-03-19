@@ -27,12 +27,14 @@
     is_active: boolean;
     created_at: string;
     updated_at: string;
+    channels: string[];
   };
 
   type WorkflowForm = {
     name: string;
     description: string;
     is_active: boolean;
+    channels: string[];
   };
 
   type ChannelStatus = {
@@ -56,6 +58,7 @@
     name: "",
     description: "",
     is_active: true,
+    channels: [],
   };
   let loading = false;
 
@@ -72,6 +75,7 @@
       name: "",
       description: "",
       is_active: true,
+      channels: [],
     };
   }
 
@@ -144,6 +148,11 @@
       return;
     }
 
+    if (form.channels.length === 0) {
+      workflowsError = "validation_error: selectionner au moins un canal";
+      return;
+    }
+
     if (editingId == null && !channelStatus?.has_valid_channel) {
       workflowsError = "no_valid_channel: configure au moins un canal valide avant de creer un workflow";
       return;
@@ -156,6 +165,7 @@
             name: form.name,
             description: form.description,
             is_active: form.is_active,
+            channels: form.channels,
           },
         });
       } else {
@@ -166,6 +176,10 @@
             description: form.description,
             is_active: form.is_active,
           },
+        });
+        await invoke<string[]>("workflow_channels_set", {
+          workflowId: editingId,
+          channels: form.channels,
         });
       }
 
@@ -183,6 +197,7 @@
       name: w.name,
       description: w.description,
       is_active: w.is_active,
+      channels: [...w.channels],
     };
   }
 
@@ -265,6 +280,22 @@
         Workflow actif
       </label>
 
+      <label>
+        Canaux cibles (au moins un requis)
+        {#if channelStatus?.valid_channels?.length}
+          <div class="channel-checkboxes">
+            {#each channelStatus.valid_channels as ch}
+              <label class="checkbox">
+                <input type="checkbox" bind:group={form.channels} value={ch} />
+                {ch}
+              </label>
+            {/each}
+          </div>
+        {:else}
+          <span class="warn">Aucun canal valide disponible</span>
+        {/if}
+      </label>
+
       <div class="actions">
         <button type="submit" disabled={editingId == null && !channelStatus?.has_valid_channel}>
           {editingId == null ? "Creer" : "Enregistrer"}
@@ -292,6 +323,9 @@
               <p>
                 Statut:
                 <strong class={w.is_active ? "ok" : "warn"}>{w.is_active ? "actif" : "inactif"}</strong>
+              </p>
+              <p class="wf-channels">
+                Canaux: {w.channels?.length ? w.channels.join(", ") : "(aucun)"}
               </p>
             </div>
             <div class="actions">
@@ -397,6 +431,17 @@
   .wf-name {
     font-weight: 700;
     margin: 0;
+  }
+  .wf-channels {
+    font-size: 0.85rem;
+    color: #555;
+    margin: 0.25rem 0 0;
+  }
+  .channel-checkboxes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    margin-top: 0.25rem;
   }
   .actions {
     display: flex;
