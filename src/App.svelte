@@ -49,20 +49,11 @@
   };
   let loading = false;
 
-  function apiBaseUrl(): string {
-    return health?.api_url ?? "http://127.0.0.1:8787";
-  }
-
-  async function readErrorMessage(response: Response): Promise<string> {
-    try {
-      const body = await response.json();
-      if (body?.code && body?.message) {
-        return `${body.code}: ${body.message}`;
-      }
-      return JSON.stringify(body);
-    } catch {
-      return `HTTP ${response.status}`;
+  function invokeError(e: unknown): string {
+    if (typeof e === "string") {
+      return e;
     }
+    return `Erreur Tauri: ${String(e)}`;
   }
 
   function resetForm() {
@@ -79,15 +70,9 @@
     workflowsError = "";
     workflowsInfo = "";
     try {
-      const response = await fetch(`${apiBaseUrl()}/workflows`);
-      if (!response.ok) {
-        workflowsError = await readErrorMessage(response);
-        return;
-      }
-      const body = await response.json();
-      workflows = body.items ?? [];
+      workflows = await invoke<Workflow[]>("workflows_list");
     } catch (e) {
-      workflowsError = `Erreur reseau: ${String(e)}`;
+      workflowsError = invokeError(e);
     } finally {
       workflowsLoading = false;
     }
@@ -120,27 +105,31 @@
       return;
     }
 
-    const endpoint =
-      editingId == null ? `${apiBaseUrl()}/workflows` : `${apiBaseUrl()}/workflows/${editingId}`;
-    const method = editingId == null ? "POST" : "PUT";
-
     try {
-      const response = await fetch(endpoint, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
-      });
-
-      if (!response.ok) {
-        workflowsError = await readErrorMessage(response);
-        return;
+      if (editingId == null) {
+        await invoke<Workflow>("workflows_create", {
+          payload: {
+            name: form.name,
+            description: form.description,
+            is_active: form.is_active,
+          },
+        });
+      } else {
+        await invoke<Workflow>("workflows_update", {
+          workflow_id: editingId,
+          payload: {
+            name: form.name,
+            description: form.description,
+            is_active: form.is_active,
+          },
+        });
       }
 
       workflowsInfo = editingId == null ? "Workflow cree." : "Workflow mis a jour.";
       resetForm();
       await loadWorkflows();
     } catch (e) {
-      workflowsError = `Erreur reseau: ${String(e)}`;
+      workflowsError = invokeError(e);
     }
   }
 
@@ -162,20 +151,14 @@
     workflowsError = "";
     workflowsInfo = "";
     try {
-      const response = await fetch(`${apiBaseUrl()}/workflows/${w.id}`, {
-        method: "DELETE",
-      });
-      if (!response.ok) {
-        workflowsError = await readErrorMessage(response);
-        return;
-      }
+      await invoke<boolean>("workflows_delete", { workflow_id: w.id });
       workflowsInfo = "Workflow supprime.";
       if (editingId === w.id) {
         resetForm();
       }
       await loadWorkflows();
     } catch (e) {
-      workflowsError = `Erreur reseau: ${String(e)}`;
+      workflowsError = invokeError(e);
     }
   }
 
