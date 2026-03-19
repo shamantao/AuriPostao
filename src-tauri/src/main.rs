@@ -11,7 +11,7 @@ mod paths;
 
 use config::AppConfig;
 use errors::AppError;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
 #[derive(Debug, Serialize)]
@@ -93,6 +93,86 @@ struct BootstrapStatus {
     mode: String,
 }
 
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WorkflowDto {
+    id: i64,
+    local_user: String,
+    name: String,
+    description: String,
+    is_active: bool,
+    created_at: String,
+    updated_at: String,
+    channels: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct WorkflowListResponse {
+    items: Vec<WorkflowDto>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowCreateInput {
+    name: String,
+    description: String,
+    is_active: bool,
+    channels: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowChannelsResponse {
+    channels: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowChannelsInput {
+    channels: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowUpdateInput {
+    name: Option<String>,
+    description: Option<String>,
+    is_active: Option<bool>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct ChannelStatusDto {
+    has_valid_channel: bool,
+    valid_channels: Vec<String>,
+    config_url: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ChannelDummyInput {
+    enabled: bool,
+}
+
+#[derive(Debug, Deserialize)]
+struct ApiError {
+    code: String,
+    message: String,
+}
+
+fn api_base_url() -> String {
+    std::env::var("AURIPOSTAO_API_URL").unwrap_or_else(|_| "http://127.0.0.1:8787".to_string())
+}
+
+fn build_client() -> Result<reqwest::blocking::Client, String> {
+    reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(3))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client: {e}"))
+}
+
+fn api_error_from_response(resp: reqwest::blocking::Response) -> String {
+    let status = resp.status();
+    let body = resp.text().unwrap_or_else(|_| "<empty body>".to_string());
+    if let Ok(parsed) = serde_json::from_str::<ApiError>(&body) {
+        return format!("{}: {}", parsed.code, parsed.message);
+    }
+    format!("HTTP {}: {}", status, body)
+}
+
 #[tauri::command]
 fn bootstrap_status(cfg: tauri::State<AppConfig>) -> Result<BootstrapStatus, String> {
     let api_url =
@@ -132,6 +212,176 @@ fn bootstrap_status(cfg: tauri::State<AppConfig>) -> Result<BootstrapStatus, Str
         db_exists,
         mode,
     })
+}
+
+#[tauri::command]
+fn workflows_list() -> Result<Vec<WorkflowDto>, String> {
+    let api_url = api_base_url();
+    let url = format!("{}/workflows", api_url.trim_end_matches('/'));
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for list_workflows: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    let data: WorkflowListResponse = resp
+        .json()
+        .map_err(|e| format!("invalid /workflows JSON response: {e}"))?;
+    Ok(data.items)
+}
+
+#[tauri::command]
+fn workflows_create(payload: WorkflowCreateInput) -> Result<WorkflowDto, String> {
+    let api_url = api_base_url();
+    let url = format!("{}/workflows", api_url.trim_end_matches('/'));
+    let client = build_client()?;
+    let resp = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for create_workflow: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid create_workflow JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflows_update(workflow_id: i64, payload: WorkflowUpdateInput) -> Result<WorkflowDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for update_workflow: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid update_workflow JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflows_delete(workflow_id: i64) -> Result<bool, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .delete(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for delete_workflow: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    Ok(true)
+}
+
+#[tauri::command]
+fn channels_status() -> Result<ChannelStatusDto, String> {
+    let api_url = api_base_url();
+    let url = format!("{}/channels/status", api_url.trim_end_matches('/'));
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for channels_status: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid channels_status JSON response: {e}"))
+}
+
+#[tauri::command]
+fn channels_set_dummy(payload: ChannelDummyInput) -> Result<ChannelStatusDto, String> {
+    let api_url = api_base_url();
+    let url = format!("{}/channels/dummy", api_url.trim_end_matches('/'));
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for channels_set_dummy: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid channels_set_dummy JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_channels_get(workflow_id: i64) -> Result<Vec<String>, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/channels",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_channels_get: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    let data: WorkflowChannelsResponse = resp
+        .json()
+        .map_err(|e| format!("invalid workflow_channels_get JSON response: {e}"))?;
+    Ok(data.channels)
+}
+
+#[tauri::command]
+fn workflow_channels_set(workflow_id: i64, channels: Vec<String>) -> Result<Vec<String>, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/channels",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let payload = WorkflowChannelsInput { channels };
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_channels_set: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    let data: WorkflowChannelsResponse = resp
+        .json()
+        .map_err(|e| format!("invalid workflow_channels_set JSON response: {e}"))?;
+    Ok(data.channels)
 }
 
 fn main() -> Result<(), AppError> {
@@ -194,7 +444,18 @@ fn main() -> Result<(), AppError> {
         .manage(cfg)
         .manage(paths)
         .manage(api_process)
-        .invoke_handler(tauri::generate_handler![healthcheck, bootstrap_status])
+        .invoke_handler(tauri::generate_handler![
+            healthcheck,
+            bootstrap_status,
+            workflows_list,
+            workflows_create,
+            workflows_update,
+            workflows_delete,
+            channels_status,
+            channels_set_dummy,
+            workflow_channels_get,
+            workflow_channels_set
+        ])
         .run(tauri::generate_context!())
         .map_err(|e| AppError::Tauri(e.to_string()))
 }
