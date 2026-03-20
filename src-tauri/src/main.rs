@@ -199,6 +199,51 @@ struct ChannelDummyInput {
     enabled: bool,
 }
 
+#[derive(Debug, Serialize, Deserialize)]
+struct AiConfigDto {
+    workflow_id: i64,
+    provider: String,
+    base_url: String,
+    model: String,
+    timeout_seconds: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct AiConfigInput {
+    provider: String,
+    base_url: String,
+    model: String,
+    timeout_seconds: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct VoiceCriteriaDto {
+    workflow_id: i64,
+    preset: String,
+    custom_instructions: String,
+    min_length: i64,
+    max_length: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct VoiceCriteriaInput {
+    preset: String,
+    custom_instructions: String,
+    min_length: i64,
+    max_length: i64,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct GenerationResultDto {
+    workflow_id: i64,
+    journal: Option<String>,
+    post: Option<String>,
+    provider: String,
+    model: String,
+    error_type: Option<String>,
+    error_message: Option<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiError {
     code: String,
@@ -525,6 +570,124 @@ fn ingestion_preview(payload: IngestionPreviewInput) -> Result<IngestionPreviewR
         .map_err(|e| format!("invalid ingestion_preview JSON response: {e}"))
 }
 
+#[tauri::command]
+fn workflow_ai_config_get(workflow_id: i64) -> Result<AiConfigDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/ai-config",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_ai_config_get: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid workflow_ai_config_get JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_ai_config_set(workflow_id: i64, payload: AiConfigInput) -> Result<AiConfigDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/ai-config",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_ai_config_set: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid workflow_ai_config_set JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_voice_criteria_get(workflow_id: i64) -> Result<VoiceCriteriaDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/voice-criteria",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_voice_criteria_get: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid workflow_voice_criteria_get JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_voice_criteria_set(
+    workflow_id: i64,
+    payload: VoiceCriteriaInput,
+) -> Result<VoiceCriteriaDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/voice-criteria",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_voice_criteria_set: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid workflow_voice_criteria_set JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_generate(workflow_id: i64) -> Result<GenerationResultDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/generate",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = reqwest::blocking::Client::builder()
+        .timeout(Duration::from_secs(120))
+        .build()
+        .map_err(|e| format!("failed to build HTTP client for generate: {e}"))?;
+    let resp = client
+        .post(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_generate: {e}"))?;
+
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+
+    resp.json()
+        .map_err(|e| format!("invalid workflow_generate JSON response: {e}"))
+}
+
 fn main() -> Result<(), AppError> {
     // 1. Load merged config (default → user → project → runtime)
     let cfg = config::load()?;
@@ -574,7 +737,7 @@ fn main() -> Result<(), AppError> {
 
     tracing::info!(
         app = cfg.app.name.as_str(),
-        version = cfg.app.version.as_str(),
+        version = env!("CARGO_PKG_VERSION"),
         mode = cfg.app.mode.as_str(),
         logs = paths.logs_dir.display().to_string().as_str(),
         "startup"
@@ -600,6 +763,11 @@ fn main() -> Result<(), AppError> {
             workflow_sources_set,
             workflow_ingestion_preview,
             ingestion_preview,
+            workflow_ai_config_get,
+            workflow_ai_config_set,
+            workflow_voice_criteria_get,
+            workflow_voice_criteria_set,
+            workflow_generate,
             pick_text_files,
             pick_directory
         ])

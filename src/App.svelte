@@ -77,6 +77,40 @@
     max_file_size_bytes: number;
   };
 
+  type AiConfig = {
+    workflow_id: number;
+    provider: string;
+    base_url: string;
+    model: string;
+    timeout_seconds: number;
+  };
+
+  type VoiceCriteria = {
+    workflow_id: number;
+    preset: string;
+    custom_instructions: string;
+    min_length: number;
+    max_length: number;
+  };
+
+  type GenerationResult = {
+    workflow_id: number;
+    journal: string | null;
+    post: string | null;
+    provider: string;
+    model: string;
+    error_type: string | null;
+    error_message: string | null;
+  };
+
+  type GenerationHistoryEntry = {
+    timestamp: string;
+    journal: string | null;
+    post: string | null;
+    provider: string;
+    model: string;
+  };
+
   const defaultTomlText = `# AuriPostao - Default Configuration
 # Template version: 1.0.0
 #
@@ -149,6 +183,22 @@ include_failed = true`;
   let ingestionWarning = "";
   let ingestionPreview: IngestionPreview | null = null;
 
+  let aiProvider = "ollama";
+  let aiBaseUrl = "http://localhost:11434";
+  let aiModel = "mistral";
+  let aiTimeout = 60;
+  let voicePreset = "professional_concise";
+  let voiceCustomInstructions = "";
+  let voiceMinLength = 50;
+  let voiceMaxLength = 300;
+  let generationLoading = false;
+  let generationError = "";
+  let generationInfo = "";
+  let generationResult: GenerationResult | null = null;
+  let generationHistory: GenerationHistoryEntry[] = [];
+  let genConfigSaving = false;
+  let genConfigSaved = false;
+
   let form: WorkflowForm = {
     name: "",
     description: "",
@@ -193,6 +243,20 @@ include_failed = true`;
     ingestionError = "";
     ingestionInfo = "";
     ingestionWarning = "";
+    aiProvider = "ollama";
+    aiBaseUrl = "http://localhost:11434";
+    aiModel = "mistral";
+    aiTimeout = 60;
+    voicePreset = "professional_concise";
+    voiceCustomInstructions = "";
+    voiceMinLength = 50;
+    voiceMaxLength = 300;
+    generationLoading = false;
+    generationError = "";
+    generationInfo = "";
+    generationResult = null;
+    generationHistory = [];
+    genConfigSaved = false;
   }
 
   function selectedWorkflowLabel(): string {
@@ -326,6 +390,8 @@ include_failed = true`;
       includeSubdirs = true;
       maxFileSizeBytes = 1_000_000;
     }
+
+    await loadGenerationConfig();
   }
 
   async function submitWorkflowDocument() {
@@ -514,6 +580,99 @@ include_failed = true`;
       ingestionError = invokeError(e);
     } finally {
       ingestionLoading = false;
+    }
+  }
+
+  async function loadGenerationConfig() {
+    if (selectedWorkflowId == null) return;
+    try {
+      const ac = await invoke<AiConfig>("workflow_ai_config_get", {
+        workflowId: selectedWorkflowId,
+      });
+      aiProvider = ac.provider;
+      aiBaseUrl = ac.base_url;
+      aiModel = ac.model;
+      aiTimeout = ac.timeout_seconds;
+    } catch (_e) {
+      // keep defaults
+    }
+    try {
+      const vc = await invoke<VoiceCriteria>("workflow_voice_criteria_get", {
+        workflowId: selectedWorkflowId,
+      });
+      voicePreset = vc.preset;
+      voiceCustomInstructions = vc.custom_instructions;
+      voiceMinLength = vc.min_length;
+      voiceMaxLength = vc.max_length;
+    } catch (_e) {
+      // keep defaults
+    }
+  }
+
+  async function saveGenerationConfig() {
+    if (selectedWorkflowId == null) return;
+    genConfigSaving = true;
+    genConfigSaved = false;
+    generationError = "";
+    try {
+      await invoke("workflow_ai_config_set", {
+        workflowId: selectedWorkflowId,
+        payload: {
+          provider: aiProvider,
+          base_url: aiBaseUrl,
+          model: aiModel,
+          timeout_seconds: aiTimeout,
+        },
+      });
+      await invoke("workflow_voice_criteria_set", {
+        workflowId: selectedWorkflowId,
+        payload: {
+          preset: voicePreset,
+          custom_instructions: voiceCustomInstructions,
+          min_length: voiceMinLength,
+          max_length: voiceMaxLength,
+        },
+      });
+      genConfigSaved = true;
+      setTimeout(() => {
+        genConfigSaved = false;
+      }, 3000);
+    } catch (e) {
+      generationError = invokeError(e);
+    } finally {
+      genConfigSaving = false;
+    }
+  }
+
+  async function runGeneration() {
+    if (selectedWorkflowId == null) return;
+    generationLoading = true;
+    generationError = "";
+    generationInfo = "";
+    try {
+      const result = await invoke<GenerationResult>("workflow_generate", {
+        workflowId: selectedWorkflowId,
+      });
+      if (!result.error_type) {
+        generationResult = result;
+        generationHistory = [
+          {
+            timestamp: new Date().toLocaleTimeString(),
+            journal: result.journal,
+            post: result.post,
+            provider: result.provider,
+            model: result.model,
+          },
+          ...generationHistory,
+        ].slice(0, 3);
+        generationInfo = "Generation complete.";
+      } else {
+        generationError = `${result.error_type}: ${result.error_message}`;
+      }
+    } catch (e) {
+      generationError = invokeError(e);
+    } finally {
+      generationLoading = false;
     }
   }
 
@@ -709,6 +868,123 @@ include_failed = true`;
                 <ul class="source-list">
                   {#each ingestionPreview.errors as item}
                     <li>{item.path} - {item.reason}</li>
+                  {/each}
+                </ul>
+              {/if}
+            {/if}
+          </div>
+
+          <div class="preview-box generation-block">
+            <h3>Block 6. Generation</h3>
+
+            {#if isCreatingWorkflow}
+              <p class="warn">Save the workflow first to enable generation.</p>
+            {:else}
+              <h4>AI Provider</h4>
+              <div class="gen-config-grid">
+                <label>
+                  Provider
+                  <select bind:value={aiProvider}>
+                    <option value="ollama">Ollama (local)</option>
+                    <option value="openai_compat">OpenAI-compatible</option>
+                  </select>
+                </label>
+                <label>
+                  Base URL
+                  <input bind:value={aiBaseUrl} placeholder="http://localhost:11434" />
+                </label>
+                <label>
+                  Model
+                  <input bind:value={aiModel} placeholder="mistral" />
+                </label>
+                <label>
+                  Timeout (s)
+                  <input type="number" min="5" max="600" step="5" bind:value={aiTimeout} />
+                </label>
+              </div>
+
+              <h4>Voice Criteria</h4>
+              <div class="gen-config-grid">
+                <label>
+                  Style preset
+                  <select bind:value={voicePreset}>
+                    <option value="professional_concise">Professional — Concise</option>
+                    <option value="professional_detailed">Professional — Detailed</option>
+                    <option value="casual">Casual</option>
+                    <option value="storytelling">Storytelling</option>
+                    <option value="technical">Technical</option>
+                    <option value="custom">Custom</option>
+                  </select>
+                </label>
+                <label>
+                  Min length (words)
+                  <input type="number" min="1" step="10" bind:value={voiceMinLength} />
+                </label>
+                <label>
+                  Max length (words)
+                  <input type="number" min="2" step="10" bind:value={voiceMaxLength} />
+                </label>
+              </div>
+
+              {#if voicePreset === "custom"}
+                <label style="display:grid; gap:0.28rem; margin-top:0.4rem; font-size:0.92rem;">
+                  Custom instructions
+                  <textarea bind:value={voiceCustomInstructions} rows="3" placeholder="Write in a conversational tone..." />
+                </label>
+              {/if}
+
+              <div class="actions" style="margin-top:0.6rem;">
+                <button type="button" class="secondary" on:click={saveGenerationConfig} disabled={genConfigSaving}>
+                  {genConfigSaving ? "Saving..." : "Save config"}
+                </button>
+                {#if genConfigSaved}<span class="ok" style="font-size:0.88rem; align-self:center;">Config saved.</span>{/if}
+              </div>
+
+              <div class="gen-divider"></div>
+
+              <div class="actions">
+                <button type="button" on:click={runGeneration} disabled={generationLoading}>
+                  {generationLoading ? "Generating..." : "Generate"}
+                </button>
+                {#if generationResult && !generationLoading}
+                  <button type="button" class="secondary" on:click={runGeneration} disabled={generationLoading}>
+                    Regenerate
+                  </button>
+                {/if}
+              </div>
+
+              {#if generationError}<p class="ko">{generationError}</p>{/if}
+              {#if generationInfo}<p class="ok">{generationInfo}</p>{/if}
+
+              {#if generationResult}
+                <div class="preview-dual">
+                  <div class="preview-dual-pane">
+                    <h4>Journal entry</h4>
+                    <pre>{generationResult.journal ?? ""}</pre>
+                  </div>
+                  <div class="preview-dual-pane">
+                    <h4>Social post</h4>
+                    <pre>{generationResult.post ?? ""}</pre>
+                  </div>
+                </div>
+                <p class="muted gen-meta">Generated by {generationResult.provider} / {generationResult.model}</p>
+              {/if}
+
+              {#if generationHistory.length > 0}
+                <h4>Recent generations ({generationHistory.length})</h4>
+                <ul class="gen-history">
+                  {#each generationHistory as entry, i}
+                    <li>
+                      <p class="muted gen-history-meta">#{generationHistory.length - i} — {entry.timestamp} — {entry.provider}/{entry.model}</p>
+                      <div class="preview-dual preview-dual-sm">
+                        <div class="preview-dual-pane">
+                          <pre>{entry.journal ?? ""}</pre>
+                        </div>
+                        <div class="preview-dual-pane">
+                          <pre>{entry.post ?? ""}</pre>
+                        </div>
+                      </div>
+                    </li>
                   {/each}
                 </ul>
               {/if}
@@ -1111,6 +1387,79 @@ include_failed = true`;
 
   .warn {
     color: var(--warn);
+  }
+
+  select {
+    background: rgba(10, 14, 22, 0.82);
+    color: var(--text-main);
+    border: 1px solid #33405b;
+    border-radius: 8px;
+    padding: 0.48rem 0.55rem;
+    appearance: auto;
+    cursor: pointer;
+  }
+
+  .generation-block {
+    margin-top: 1rem;
+  }
+
+  .gen-config-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: 0.55rem;
+    margin-bottom: 0.5rem;
+  }
+
+  .gen-config-grid label {
+    display: grid;
+    gap: 0.28rem;
+    font-size: 0.92rem;
+  }
+
+  .gen-divider {
+    border-top: 1px solid #33405b;
+    margin: 0.8rem 0;
+  }
+
+  .preview-dual {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 0.8rem;
+    margin-top: 0.7rem;
+  }
+
+  .preview-dual-pane pre {
+    max-height: 220px;
+    overflow-y: auto;
+  }
+
+  .preview-dual-sm .preview-dual-pane pre {
+    max-height: 120px;
+  }
+
+  .gen-meta {
+    font-size: 0.8rem;
+    margin-top: 0.4rem;
+  }
+
+  .gen-history {
+    list-style: none;
+    margin: 0.5rem 0 0;
+    padding: 0;
+    display: grid;
+    gap: 0.8rem;
+  }
+
+  .gen-history li {
+    border: 1px solid #33405b;
+    border-radius: 8px;
+    padding: 0.6rem;
+    background: rgba(10, 14, 22, 0.35);
+  }
+
+  .gen-history-meta {
+    margin: 0 0 0.4rem;
+    font-size: 0.82rem;
   }
 
   @media (max-width: 980px) {

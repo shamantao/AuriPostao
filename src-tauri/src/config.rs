@@ -23,6 +23,8 @@ pub struct AppConfig {
 #[allow(dead_code)]
 pub struct AppSection {
     pub name: String,
+    // version removed from TOML — use env!("CARGO_PKG_VERSION") as single source of truth
+    #[serde(default)]
     pub version: String,
     pub mode: String, // "debug" | "normal"
     pub language: String,
