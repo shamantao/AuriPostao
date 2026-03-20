@@ -693,5 +693,47 @@ class ApiGenerationTests(unittest.TestCase):
         self.assertIn("UNIQUE_MARKER_XYZ", kwargs["prompt"])
 
 
+class OpenAICompatUrlNormalizationTests(unittest.TestCase):
+    """Unit tests for _call_openai_compat URL construction."""
+
+    @unittest.mock.patch("core.api.main.urllib.request.urlopen")
+    def test_base_url_with_v1_suffix_no_double_v1(self, mock_urlopen: unittest.mock.MagicMock) -> None:
+        """base_url already ending with /v1 must NOT produce /v1/v1/chat/completions."""
+        captured: list[str] = []
+
+        class FakeResp:
+            def read(self):
+                return b'{"choices":[{"message":{"content":"ok"}}]}'
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        def fake_open(req, timeout):
+            captured.append(req.full_url)
+            return FakeResp()
+
+        mock_urlopen.side_effect = fake_open
+        api_main._call_openai_compat("http://localhost:8200/v1", "mymodel", "hello", 10)
+        self.assertEqual(captured[0], "http://localhost:8200/v1/chat/completions")
+
+    @unittest.mock.patch("core.api.main.urllib.request.urlopen")
+    def test_base_url_without_v1_suffix_appends_v1(self, mock_urlopen: unittest.mock.MagicMock) -> None:
+        """base_url without /v1 must produce /v1/chat/completions."""
+        captured: list[str] = []
+
+        class FakeResp:
+            def read(self):
+                return b'{"choices":[{"message":{"content":"ok"}}]}'
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        def fake_open(req, timeout):
+            captured.append(req.full_url)
+            return FakeResp()
+
+        mock_urlopen.side_effect = fake_open
+        api_main._call_openai_compat("http://localhost:8200", "mymodel", "hello", 10)
+        self.assertEqual(captured[0], "http://localhost:8200/v1/chat/completions")
+
+
 if __name__ == "__main__":
     unittest.main()

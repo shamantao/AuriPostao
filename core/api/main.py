@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
+import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
@@ -448,7 +449,11 @@ def _call_ollama(base_url: str, model: str, prompt: str, timeout: int) -> str:
 
 
 def _call_openai_compat(base_url: str, model: str, prompt: str, timeout: int) -> str:
-    url = base_url.rstrip("/") + "/v1/chat/completions"
+    base = base_url.rstrip("/")
+    # Accept both "http://host/v1" and "http://host" — append /v1 only if absent
+    if not base.endswith("/v1"):
+        base = base + "/v1"
+    url = base + "/chat/completions"
     data = json.dumps({"model": model, "messages": [{"role": "user", "content": prompt}]}).encode()
     req = urllib.request.Request(url, data=data, headers={"Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -459,28 +464,41 @@ def _call_openai_compat(base_url: str, model: str, prompt: str, timeout: int) ->
 def _call_ai_provider(
     provider: str, base_url: str, model: str, prompt: str, timeout: int
 ) -> tuple[str | None, str | None, str | None]:
-    """Call AI provider. Returns (response_text, error_type, error_message).
+    """Call AI provider with up to 3 attempts on transient errors (5xx, timeout, connection).
+    Returns (response_text, error_type, error_message).
     error_type is None on success, 'transient' or 'permanent' on failure."""
-    try:
-        if provider == "openai_compat":
-            text = _call_openai_compat(base_url, model, prompt, timeout)
-        else:
-            text = _call_ollama(base_url, model, prompt, timeout)
-        return text, None, None
-    except TimeoutError:
-        return None, "transient", "Request timed out"
-    except urllib.error.HTTPError as exc:
-        if exc.code in (401, 403):
-            return None, "permanent", f"Authentication failed (HTTP {exc.code})"
-        if exc.code == 404:
-            return None, "permanent", "Model or endpoint not found (HTTP 404)"
-        return None, "transient", f"Provider error (HTTP {exc.code})"
-    except urllib.error.URLError as exc:
-        return None, "transient", f"Cannot connect to provider: {exc.reason}"
-    except (json.JSONDecodeError, KeyError) as exc:
-        return None, "permanent", f"Invalid response from provider: {exc}"
-    except Exception as exc:
-        return None, "transient", f"Unexpected error: {exc}"
+    max_attempts = 3
+    last_err_type: str | None = None
+    last_err_msg: str | None = None
+
+    for attempt in range(1, max_attempts + 1):
+        try:
+            if provider == "openai_compat":
+                text = _call_openai_compat(base_url, model, prompt, timeout)
+            else:
+                text = _call_ollama(base_url, model, prompt, timeout)
+            return text, None, None
+        except TimeoutError:
+            last_err_type, last_err_msg = "transient", "Request timed out"
+        except urllib.error.HTTPError as exc:
+            if exc.code in (401, 403):
+                return None, "permanent", f"Authentication failed (HTTP {exc.code})"
+            if exc.code == 404:
+                return None, "permanent", "Model or endpoint not found (HTTP 404)"
+            # 500/503 are transient — model may still be loading
+            last_err_type, last_err_msg = "transient", f"Provider error (HTTP {exc.code})"
+        except urllib.error.URLError as exc:
+            last_err_type, last_err_msg = "transient", f"Cannot connect to provider: {exc.reason}"
+        except (json.JSONDecodeError, KeyError) as exc:
+            return None, "permanent", f"Invalid response from provider: {exc}"
+        except Exception as exc:
+            last_err_type, last_err_msg = "transient", f"Unexpected error: {exc}"
+
+        if attempt < max_attempts:
+            wait = 5 * attempt  # 5s, then 10s
+            time.sleep(wait)
+
+    return None, last_err_type, last_err_msg
 
 
 def _build_prompt(criteria: dict[str, Any], content_summary: str) -> str:

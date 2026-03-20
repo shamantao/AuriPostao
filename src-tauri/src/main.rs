@@ -664,27 +664,39 @@ fn workflow_voice_criteria_set(
 }
 
 #[tauri::command]
-fn workflow_generate(workflow_id: i64) -> Result<GenerationResultDto, String> {
+async fn workflow_generate(workflow_id: i64) -> Result<GenerationResultDto, String> {
     let api_url = api_base_url();
     let url = format!(
         "{}/workflows/{}/generate",
         api_url.trim_end_matches('/'),
         workflow_id
     );
-    let client = reqwest::blocking::Client::builder()
-        .timeout(Duration::from_secs(120))
+    // Long timeout: the Python side is bounded by the user-configured AI timeout;
+    // Rust should never cut the connection before Python does.
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(600))
         .build()
         .map_err(|e| format!("failed to build HTTP client for generate: {e}"))?;
     let resp = client
         .post(&url)
         .send()
+        .await
         .map_err(|e| format!("api unreachable for workflow_generate: {e}"))?;
 
     if !resp.status().is_success() {
-        return Err(api_error_from_response(resp));
+        let status = resp.status();
+        let body = resp
+            .text()
+            .await
+            .unwrap_or_else(|_| "<empty body>".to_string());
+        if let Ok(parsed) = serde_json::from_str::<ApiError>(&body) {
+            return Err(format!("{}: {}", parsed.code, parsed.message));
+        }
+        return Err(format!("HTTP {}: {}", status, body));
     }
 
-    resp.json()
+    resp.json::<GenerationResultDto>()
+        .await
         .map_err(|e| format!("invalid workflow_generate JSON response: {e}"))
 }
 

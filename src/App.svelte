@@ -198,6 +198,8 @@ include_failed = true`;
   let generationHistory: GenerationHistoryEntry[] = [];
   let genConfigSaving = false;
   let genConfigSaved = false;
+  let genElapsed = 0;
+  let _genTimer: ReturnType<typeof setInterval> | null = null;
 
   let form: WorkflowForm = {
     name: "",
@@ -257,6 +259,7 @@ include_failed = true`;
     generationResult = null;
     generationHistory = [];
     genConfigSaved = false;
+    genElapsed = 0;
   }
 
   function selectedWorkflowLabel(): string {
@@ -644,11 +647,41 @@ include_failed = true`;
     }
   }
 
+  function onProviderChange() {
+    const DEFAULTS: Record<string, string> = {
+      ollama: "http://localhost:11434",
+      openai_compat: "http://localhost:8200/v1",
+    };
+    // Auto-fill only if the current URL is still a known default or empty
+    if (!aiBaseUrl || Object.values(DEFAULTS).includes(aiBaseUrl)) {
+      aiBaseUrl = DEFAULTS[aiProvider] ?? aiBaseUrl;
+    }
+  }
+
+  function formatGenerationError(errType: string | null, errMsg: string | null): string {
+    const base = `${errType}: ${errMsg ?? "unknown error"}`;
+    if (errMsg?.includes("timed out") || errMsg?.includes("Request timed out")) {
+      return `${base} — Try a smaller model, or increase Timeout (current: ${aiTimeout}s).`;
+    }
+    if (errMsg?.includes("404")) {
+      return `${base} — Check Base URL and model name ("${aiModel}").`;
+    }
+    if (errMsg?.includes("connect") || errMsg?.includes("unreachable")) {
+      return `${base} — Is the provider running at ${aiBaseUrl}?`;
+    }
+    if (errMsg?.includes("HTTP 500")) {
+      return `${base} — The provider returned an internal error (model loading or out of memory). AuriPostao retried 3x automatically.`;
+    }
+    return base;
+  }
+
   async function runGeneration() {
     if (selectedWorkflowId == null) return;
     generationLoading = true;
     generationError = "";
     generationInfo = "";
+    genElapsed = 0;
+    _genTimer = setInterval(() => { genElapsed += 1; }, 1000);
     try {
       const result = await invoke<GenerationResult>("workflow_generate", {
         workflowId: selectedWorkflowId,
@@ -665,13 +698,14 @@ include_failed = true`;
           },
           ...generationHistory,
         ].slice(0, 3);
-        generationInfo = "Generation complete.";
+        generationInfo = `Generation complete in ${genElapsed}s.`;
       } else {
-        generationError = `${result.error_type}: ${result.error_message}`;
+        generationError = formatGenerationError(result.error_type, result.error_message);
       }
     } catch (e) {
       generationError = invokeError(e);
     } finally {
+      if (_genTimer) { clearInterval(_genTimer); _genTimer = null; }
       generationLoading = false;
     }
   }
@@ -884,7 +918,7 @@ include_failed = true`;
               <div class="gen-config-grid">
                 <label>
                   Provider
-                  <select bind:value={aiProvider}>
+                  <select bind:value={aiProvider} on:change={onProviderChange}>
                     <option value="ollama">Ollama (local)</option>
                     <option value="openai_compat">OpenAI-compatible</option>
                   </select>
@@ -895,7 +929,8 @@ include_failed = true`;
                 </label>
                 <label>
                   Model
-                  <input bind:value={aiModel} placeholder="mistral" />
+                  <input bind:value={aiModel}
+                    placeholder={aiProvider === "ollama" ? "mistral, qwen3-vl:2b..." : "gpt-4o-mini, mistral..."} />
                 </label>
                 <label>
                   Timeout (s)
@@ -944,7 +979,7 @@ include_failed = true`;
 
               <div class="actions">
                 <button type="button" on:click={runGeneration} disabled={generationLoading}>
-                  {generationLoading ? "Generating..." : "Generate"}
+                  {generationLoading ? `Generating... ${genElapsed}s` : "Generate"}
                 </button>
                 {#if generationResult && !generationLoading}
                   <button type="button" class="secondary" on:click={runGeneration} disabled={generationLoading}>
@@ -952,6 +987,11 @@ include_failed = true`;
                   </button>
                 {/if}
               </div>
+              <p class="muted gen-hint">
+                {generationLoading
+                  ? "The app is active — generation is running in background."
+                  : "Generation can take 30–120 s depending on model size and hardware."}
+              </p>
 
               {#if generationError}<p class="ko">{generationError}</p>{/if}
               {#if generationInfo}<p class="ok">{generationInfo}</p>{/if}
