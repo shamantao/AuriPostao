@@ -32,7 +32,30 @@ Mode de pilotage:
 - Les issues GitHub sont optionnelles et servent de support de suivi, pas de specification principale.
 - La reference d architecture et de decoupage reste le PRD sections 2.3 et 2.4.
 
+## Convention de versionnement (SemVer)
+
+Source de verite unique: `src-tauri/Cargo.toml` champ `version`.
+La version est gravee dans le binaire a la compilation via `env!("CARGO_PKG_VERSION")`.
+Ne pas modifier la version dans les fichiers de config toml — ils ne contiennent plus ce champ.
+
+Règle de bump à appliquer en fin d EPIC, avant commit de cloture:
+
+| Événement                              | Bump        | Exemple         |
+|----------------------------------------|-------------|-----------------|
+| EPIC complète livrable fonctionnel     | Mineur +1   | 0.1.0 → 0.2.0   |
+| Correctif isolé (bug, tech debt)       | Patch +1    | 0.2.0 → 0.2.1   |
+| Rupture d interface ou migration DB    | Majeur +1   | 0.2.0 → 1.0.0   |
+
+Checklist de cloture d un EPIC:
+1. Bumper `version` dans `src-tauri/Cargo.toml`
+2. Ajouter une section `## [x.y.z]` dans `DOCS/CHANGELOG.md`
+3. Commiter avec message: `chore: release vX.Y.Z — close EPIC-N`
+4. Créer le tag Git: `git tag vX.Y.Z && git push origin vX.Y.Z`
+5. Créer la Release GitHub sur ce tag
+
 ## EPIC-0 - Foundation projet via tao-init
+Statut: ✅ Done
+
 Objectif testable:
 Le projet AuriPostao est genere, structure et executable localement avec les conventions tao-init, les checks baseline verts, une base Tauri + API Python connectee, et un espace GitHub pret pour piloter le delivery par US.
 
@@ -113,6 +136,8 @@ Sections:
 - documentation mise a jour
 
 ## EPIC-1 - Workflows CRUD et modele metier
+Statut: ✅ Done
+
 Objectif testable:
 Un utilisateur peut creer, editer, activer/desactiver et supprimer un workflow depuis l IHM, avec persistance SQLite des attributs coeur du pipeline.
 
@@ -158,6 +183,8 @@ Scenario test humain EPIC-1:
 4. Recharger app et verifier persistance des changements.
 
 ## EPIC-2 - Ingestion texte multi-sources
+Statut: ✅ Done
+
 Objectif testable:
 Depuis l IHM, les sources sont configurees et persistees par workflow, puis testees via un apercu exploitable.
 
@@ -206,8 +233,26 @@ Scenario test humain EPIC-2:
 5. Verifier apercu et erreurs lisibles.
 
 ## EPIC-3 - Generation IA et criteres de parole
+Statut: Ready
+
 Objectif testable:
-Un workflow genere un Journal prive et un Post public conformes au critere de parole choisi, depuis l IHM.
+Un workflow genere un Journal prive et un Post public conformes au critere de parole choisi, avec configuration persistee par workflow (provider IA, modele, style, contraintes), depuis l IHM.
+
+Objectif PRD (rappel):
+- Couvrir explicitement les blocs Workflow "Moteur IA" + "Critere de parole" (PRD sections 2.3 et 3.0 a 3.2).
+- Produire deux sorties standardisees: Journal (prive) et Post (public).
+- Garantir un test utilisateur de bout en bout dans le contexte d un workflow.
+
+Respect PRD (criteres de conformite pour implementation):
+1. Toute config IA est rattachee a `workflow_id` (jamais etat global d ecran seul).
+2. Le preview generation lit prioritairement la config persistee du workflow.
+3. Les erreurs provider/modeles sont classees (transiente/permanente) et visibles en IHM.
+4. Le scenario de test humain verifie persistance apres fermeture/reouverture du workflow.
+
+Cohérence et prerequis:
+1. Cohérence amont: EPIC-1/2 fournissent deja l ossature workflow-centric et la persistance par workflow.
+2. Cohérence aval: EPIC-4 (planification/controle) et EPIC-5+ (publication) dependent directement des sorties EPIC-3.
+3. Risque principal a contenir: ne pas introduire de configuration IA globale hors workflow.
 
 US:
 - US-3.1 (Socle) - Adaptateur IA local

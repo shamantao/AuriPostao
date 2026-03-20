@@ -12,6 +12,15 @@
 - Ecran initial de selection de sources avec apercu d ingestion (resume, exemples de contenu, ignores, erreurs)
 - US-2.0 workflow-centric: persistance des sources par `workflow_id` + endpoints `/workflows/{id}/sources` et `/workflows/{id}/ingestion/preview`
 - PRD enrichi avec un schema de reference Workflow-Centric (pipeline) et des regles de decoupage EPIC/US pour prevenir les ecarts de conception
+- UI restructuree en 3 onglets: Workflow Studio, Dashboard, Settings
+- Workflow Studio en mode document-centrique (metadata, channels, sources, scheduler slot reserve, pre-run validation)
+- Dashboard runtime avec etats connexions/systeme/db + metriques workflow/canaux
+- Theme dark unifie et responsive (desktop/mobile)
+- Basculage MVP de l interface en anglais
+
+### Changed
+- Affichage de l etat API en dashboard: `connected` / `disconnected` (au lieu de valeurs internes)
+- Backlog: EPIC-0, EPIC-1, EPIC-2 marques Done; EPIC-3 recadre selon PRD (objectif, respect, coherence)
 
 ---
 

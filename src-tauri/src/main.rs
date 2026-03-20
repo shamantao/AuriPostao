@@ -259,7 +259,7 @@ fn bootstrap_status(cfg: tauri::State<AppConfig>) -> Result<BootstrapStatus, Str
     let db_exists = std::path::Path::new(&db_path).exists();
 
     Ok(BootstrapStatus {
-        app_version: cfg.app.version.clone(),
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
         db_path,
         db_exists,
         mode,
