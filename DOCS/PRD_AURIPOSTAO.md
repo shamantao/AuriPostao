@@ -39,6 +39,51 @@ AuriPostao est une application légère, auto-hébergée et sous licence AGPL, c
     - fallback SQLite chiffré si keychain indisponible,
     - jamais de secret en clair dans la config ou les logs.
 
+### 2.3 — Schéma de référence du pipeline (Workflow-Centric)
+Le workflow est l'unité de composition principale. S'il n'y a pas de workflow, aucun autre bloc métier n'a de sens.
+
+```mermaid
+flowchart LR
+    UI["IHM Tauri\nDocument Workflow"] --> API["API Python locale\nOrchestration"]
+    API --> DB[("SQLite")]
+    API --> AI["AITAO Gateway\nOpenAI-compatible / MCP"]
+
+    subgraph WF["Workflow (agregat metier)"]
+        W0["Metadonnees\nTitre + Description + Actif"]
+        W1["Sources\nFichiers / Dossier / Recursion / Seuil taille"]
+        W2["Moteur IA\nProvider + Modele + Prompt"]
+        W3["Critere de parole\nPreset ou personnalise"]
+        W4["Planification\nSlots + fuseau + rattrapage"]
+        W5["Canaux\n1..n cibles"]
+        W6["Regles de controle\nConfidentialite + Validation + Retry"]
+    end
+
+    UI --> WF
+    WF --> API
+```
+
+Conséquences de conception :
+- Toute donnée métier est portée par `workflow_id`.
+- Les écrans "globaux" de configuration sont des aides, pas des sources de vérité métier.
+- Toute prévisualisation/test se fait dans le contexte d'un workflow.
+
+### 2.4 — Règles de découpage des futures EPIC et US
+Pour éviter les écarts de conception, chaque EPIC/US doit se rattacher explicitement au schéma 2.3.
+
+Règles obligatoires :
+1. Une US Interface qui modifie un bloc du workflow doit avoir une persistance DB/API dans le même EPIC ou un prerequis déjà livré.
+2. Une US "preview/test" doit consommer la configuration persistée du workflow (pas un état temporaire d'écran seul).
+3. Les critères d'acceptation doivent citer le bloc du workflow concerné (Sources, IA, Critère, Planification, Canaux, Contrôle).
+4. Les scénarios de test humain doivent vérifier la persistance après fermeture/réouverture du workflow.
+
+Matrice de traçabilité recommandée (pour backlog/US) :
+- Bloc Workflow : Metadonnees -> EPIC-1
+- Bloc Workflow : Sources -> EPIC-2
+- Bloc Workflow : IA + Critere de parole -> EPIC-3
+- Bloc Workflow : Planification + Controle -> EPIC-4
+- Bloc Workflow : Canaux de publication -> EPIC-5 a EPIC-8
+- Bloc Workflow : Observabilite transverse -> EPIC-9
+
 ---
 
 ## 3. Fonctionnalités V1 (MVP)

@@ -30,6 +30,7 @@ Regles transverses obligatoires:
 Mode de pilotage:
 - Le markdown backlog fait foi comme source de verite.
 - Les issues GitHub sont optionnelles et servent de support de suivi, pas de specification principale.
+- La reference d architecture et de decoupage reste le PRD sections 2.3 et 2.4.
 
 ## EPIC-0 - Foundation projet via tao-init
 Objectif testable:
