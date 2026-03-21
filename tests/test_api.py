@@ -40,7 +40,7 @@ class ApiDatabaseTests(unittest.TestCase):
             db_path = Path(tmpdir) / "auripostao.db"
             version = init_db(str(db_path))
 
-            self.assertEqual(version, 7)
+            self.assertEqual(version, 8)
 
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
@@ -60,6 +60,9 @@ class ApiDatabaseTests(unittest.TestCase):
                     "workflow_voice_criteria",
                     "workflow_schedules",
                     "schedule_runs",
+                    "forbidden_words",
+                    "workflow_forbidden_words",
+                    "workflow_drafts",
                 }.issubset(tables)
             )
 
@@ -73,7 +76,7 @@ class ApiDatabaseTests(unittest.TestCase):
                     "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
                 ).fetchone()[0]
 
-            self.assertEqual(version, 7)
+            self.assertEqual(version, 8)
 
     def test_workflows_enforces_unique_name_per_local_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -1010,6 +1013,237 @@ class SchedulerSlotComputationTests(unittest.TestCase):
             from_dt=from_dt,
         )
         self.assertEqual(result, [])
+
+# ---------------------------------------------------------------------------
+# US-4.1 — Confidentiality filter tests
+# ---------------------------------------------------------------------------
+
+
+class ApiConfidentialityTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "auripostao.db")
+        self.original_db_path = api_main.DB_PATH
+        api_main.DB_PATH = self.db_path
+        init_db(self.db_path)
+        self.client = TestClient(app)
+        # Create a workflow for per-workflow tests
+        self.client.put("/channels/dummy", json={"enabled": True})
+        resp = self.client.post(
+            "/workflows",
+            json={"name": "WF conf", "description": "", "is_active": True, "channels": ["dummy"]},
+        )
+        self.workflow_id = resp.json()["id"]
+
+    def tearDown(self) -> None:
+        api_main.DB_PATH = self.original_db_path
+        self.tmpdir.cleanup()
+
+    def test_get_global_forbidden_words_starts_empty(self) -> None:
+        resp = self.client.get("/confidentiality/forbidden-words")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["words"], [])
+
+    def test_set_global_forbidden_words_stores_and_returns_list(self) -> None:
+        resp = self.client.put(
+            "/confidentiality/forbidden-words", json={"words": ["secret", "confidential", "SECRET"]}
+        )
+        self.assertEqual(resp.status_code, 200)
+        words = resp.json()["words"]
+        # Deduplication + lower-case normalisation
+        self.assertEqual(len(words), 2)
+        self.assertIn("secret", words)
+        self.assertIn("confidential", words)
+
+    def test_set_global_forbidden_words_replaces_previous(self) -> None:
+        self.client.put("/confidentiality/forbidden-words", json={"words": ["old"]})
+        resp = self.client.put("/confidentiality/forbidden-words", json={"words": ["new"]})
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["words"], ["new"])
+
+    def test_get_workflow_forbidden_words_starts_empty(self) -> None:
+        resp = self.client.get(f"/workflows/{self.workflow_id}/forbidden-words")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["workflow_id"], self.workflow_id)
+        self.assertEqual(body["entries"], [])
+
+    def test_set_workflow_forbidden_words_add_and_remove(self) -> None:
+        resp = self.client.put(
+            f"/workflows/{self.workflow_id}/forbidden-words",
+            json={"entries": [{"word": "extra", "action": "add"}, {"word": "global_word", "action": "remove"}]},
+        )
+        self.assertEqual(resp.status_code, 200)
+        entries = resp.json()["entries"]
+        self.assertEqual(len(entries), 2)
+        actions = {e["word"]: e["action"] for e in entries}
+        self.assertEqual(actions["extra"], "add")
+        self.assertEqual(actions["global_word"], "remove")
+
+    def test_check_confidentiality_detects_global_word(self) -> None:
+        api_main._set_global_forbidden_words_via_db = None  # not used
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "test.db")
+            init_db(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                api_main._set_global_forbidden_words(conn, ["password"])
+                result = api_main._check_confidentiality(
+                    "my password is 1234", "safe post", conn, 1
+                )
+        self.assertEqual(result, ["password"])
+
+    def test_check_confidentiality_empty_list_returns_nothing(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "test.db")
+            init_db(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                result = api_main._check_confidentiality("clean journal", "clean post", conn, 1)
+        self.assertEqual(result, [])
+
+    def test_workflow_remove_overrides_global(self) -> None:
+        with tempfile.TemporaryDirectory() as tmpdir:
+            db_path = str(Path(tmpdir) / "test.db")
+            init_db(db_path)
+            with sqlite3.connect(db_path) as conn:
+                conn.row_factory = sqlite3.Row
+                # Insert workflow first
+                now = "2026-01-01T00:00:00+00:00"
+                cursor = conn.execute(
+                    "INSERT INTO workflows(local_user, name, description, is_active, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)",
+                    ("local", "w", "", 1, now, now),
+                )
+                wid = cursor.lastrowid
+                api_main._set_global_forbidden_words(conn, ["classified"])
+                from core.api.main import WorkflowForbiddenWordEntry
+                api_main._set_workflow_forbidden_words(
+                    conn, wid, [WorkflowForbiddenWordEntry(word="classified", action="remove")]
+                )
+                result = api_main._check_confidentiality(
+                    "classified document", "another post", conn, wid
+                )
+        self.assertEqual(result, [])
+
+
+# ---------------------------------------------------------------------------
+# US-4.3 — Draft validation tests
+# ---------------------------------------------------------------------------
+
+
+class ApiDraftValidationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "auripostao.db")
+        self.original_db_path = api_main.DB_PATH
+        api_main.DB_PATH = self.db_path
+        init_db(self.db_path)
+        self.client = TestClient(app)
+        self.client.put("/channels/dummy", json={"enabled": True})
+        resp = self.client.post(
+            "/workflows",
+            json={"name": "WF draft", "description": "", "is_active": True, "channels": ["dummy"]},
+        )
+        self.workflow_id = resp.json()["id"]
+
+    def tearDown(self) -> None:
+        api_main.DB_PATH = self.original_db_path
+        self.tmpdir.cleanup()
+
+    def _insert_draft(
+        self,
+        status: str = "pending_approval",
+        slot_iso: str | None = None,
+        journal: str = "my journal",
+        post: str = "my post",
+    ) -> int:
+        """Helper — inserts a draft directly in the DB and returns its id."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            draft_id = api_main._save_draft(
+                conn, self.workflow_id, journal, post, status, [], slot_iso
+            )
+        return draft_id
+
+    def test_drafts_list_starts_empty(self) -> None:
+        resp = self.client.get(f"/workflows/{self.workflow_id}/drafts")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["workflow_id"], self.workflow_id)
+        self.assertEqual(body["items"], [])
+
+    def test_draft_approve_changes_status(self) -> None:
+        draft_id = self._insert_draft(status="pending_approval")
+        resp = self.client.post(f"/workflows/{self.workflow_id}/drafts/{draft_id}/approve")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["status"], "approved")
+        self.assertEqual(body["id"], draft_id)
+
+    def test_draft_reject_changes_status(self) -> None:
+        draft_id = self._insert_draft(status="pending_approval")
+        resp = self.client.post(f"/workflows/{self.workflow_id}/drafts/{draft_id}/reject")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "rejected")
+
+    def test_draft_approve_unknown_id_returns_404(self) -> None:
+        resp = self.client.post(f"/workflows/{self.workflow_id}/drafts/99999/approve")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["code"], "draft_not_found")
+
+    def test_abandon_stale_with_no_schedule_abandons_past_drafts(self) -> None:
+        """Without a schedule, drafts with a past slot_iso should be abandoned."""
+        past_slot = "2020-01-01T10:00:00+00:00"
+        draft_id = self._insert_draft(status="pending_approval", slot_iso=past_slot)
+        resp = self.client.post(f"/workflows/{self.workflow_id}/drafts/abandon-stale")
+        self.assertEqual(resp.status_code, 200)
+        # With schedule_type=none, there are no next slots, so past drafts are abandoned
+        body = resp.json()
+        self.assertIn("abandoned_count", body)
+        # Verify status updated
+        resp2 = self.client.get(f"/workflows/{self.workflow_id}/drafts")
+        statuses = [item["status"] for item in resp2.json()["items"] if item["id"] == draft_id]
+        self.assertEqual(statuses, ["abandoned"])
+
+    def test_abandon_stale_does_not_touch_approved_drafts(self) -> None:
+        draft_id = self._insert_draft(status="approved", slot_iso="2020-01-01T10:00:00+00:00")
+        resp = self.client.post(f"/workflows/{self.workflow_id}/drafts/abandon-stale")
+        self.assertEqual(resp.status_code, 200)
+        resp2 = self.client.get(f"/workflows/{self.workflow_id}/drafts")
+        statuses = [item["status"] for item in resp2.json()["items"] if item["id"] == draft_id]
+        self.assertEqual(statuses, ["approved"])
+
+    def test_generate_with_forbidden_word_returns_blocked_status(self) -> None:
+        """Mocked generation: if AI returns forbidden word, draft is blocked_confidentiality."""
+        # Set a forbidden word
+        self.client.put("/confidentiality/forbidden-words", json={"words": ["classified"]})
+        ai_response = '{"journal": "This is classified info", "post": "public post"}'
+        with unittest.mock.patch.object(api_main, "_call_ai_provider", return_value=(ai_response, None, None)):
+            resp = self.client.post(f"/workflows/{self.workflow_id}/generate")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["error_type"], "blocked_confidentiality")
+        self.assertIsNotNone(body["draft_id"])
+        # Draft should exist with blocked_confidentiality status
+        drafts_resp = self.client.get(f"/workflows/{self.workflow_id}/drafts")
+        items = drafts_resp.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["status"], "blocked_confidentiality")
+        self.assertIn("classified", items[0]["forbidden_words_matched"])
+
+    def test_generate_clean_content_creates_pending_draft(self) -> None:
+        """Mocked generation: clean content creates a pending_approval draft."""
+        ai_response = '{"journal": "Clean journal entry", "post": "Clean post"}'
+        with unittest.mock.patch.object(api_main, "_call_ai_provider", return_value=(ai_response, None, None)):
+            resp = self.client.post(f"/workflows/{self.workflow_id}/generate")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsNone(body["error_type"])
+        self.assertIsNotNone(body["draft_id"])
+        drafts_resp = self.client.get(f"/workflows/{self.workflow_id}/drafts")
+        items = drafts_resp.json()["items"]
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["status"], "pending_approval")
 
 
 if __name__ == "__main__":

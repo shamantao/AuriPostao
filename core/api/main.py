@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 import time
 import urllib.error
@@ -121,6 +122,24 @@ class ScheduleUpdate(BaseModel):
 class ScheduleRunMark(BaseModel):
     slot_iso: str
     status: str = Field(pattern="^(done|skipped|abandoned)$")
+
+
+# ---------------------------------------------------------------------------
+# US-4.1 — Confidentiality filter
+# ---------------------------------------------------------------------------
+
+
+class ForbiddenWordsUpdate(BaseModel):
+    words: list[str] = []
+
+
+class WorkflowForbiddenWordEntry(BaseModel):
+    word: str
+    action: str = Field(default="add", pattern="^(add|remove)$")
+
+
+class WorkflowForbiddenWordsUpdate(BaseModel):
+    entries: list[WorkflowForbiddenWordEntry] = []
 
 
 TEXT_EXTENSIONS = {".txt", ".md"}
@@ -1098,6 +1117,55 @@ def init_db(db_path: str) -> int:
                 (7, _utc_now()),
             )
 
+        migration_v8_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 8"
+        ).fetchone()
+
+        if not migration_v8_applied:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS forbidden_words (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    word TEXT NOT NULL UNIQUE COLLATE NOCASE,
+                    created_at TEXT NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_forbidden_words (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id INTEGER NOT NULL,
+                    word TEXT NOT NULL COLLATE NOCASE,
+                    action TEXT NOT NULL DEFAULT 'add' CHECK (action IN ('add', 'remove')),
+                    created_at TEXT NOT NULL,
+                    UNIQUE(workflow_id, word),
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_drafts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id INTEGER NOT NULL,
+                    slot_iso TEXT,
+                    journal TEXT NOT NULL DEFAULT '',
+                    post TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL DEFAULT 'pending_approval'
+                        CHECK (status IN ('pending_approval','approved','rejected','abandoned','blocked_confidentiality')),
+                    forbidden_words_matched TEXT NOT NULL DEFAULT '[]',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (8, _utc_now()),
+            )
+
         current_version = conn.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
         ).fetchone()[0]
@@ -1405,6 +1473,214 @@ def set_voice_criteria(workflow_id: int, payload: VoiceCriteriaUpdate) -> dict[s
 
 
 # ---------------------------------------------------------------------------
+# US-4.1 — Confidentiality helpers
+# ---------------------------------------------------------------------------
+
+
+def _get_global_forbidden_words(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute(
+        "SELECT word FROM forbidden_words ORDER BY word COLLATE NOCASE"
+    ).fetchall()
+    return [r["word"] for r in rows]
+
+
+def _set_global_forbidden_words(conn: sqlite3.Connection, words: list[str]) -> list[str]:
+    conn.execute("DELETE FROM forbidden_words")
+    now = _utc_now()
+    seen: set[str] = set()
+    for w in words:
+        cleaned = w.strip().lower()
+        if cleaned and cleaned not in seen:
+            seen.add(cleaned)
+            conn.execute(
+                "INSERT INTO forbidden_words(word, created_at) VALUES (?, ?)",
+                (cleaned, now),
+            )
+    return _get_global_forbidden_words(conn)
+
+
+def _get_workflow_forbidden_words(
+    conn: sqlite3.Connection, workflow_id: int
+) -> list[dict[str, str]]:
+    rows = conn.execute(
+        "SELECT word, action FROM workflow_forbidden_words WHERE workflow_id = ? ORDER BY word COLLATE NOCASE",
+        (workflow_id,),
+    ).fetchall()
+    return [{"word": r["word"], "action": r["action"]} for r in rows]
+
+
+def _set_workflow_forbidden_words(
+    conn: sqlite3.Connection, workflow_id: int, entries: list[WorkflowForbiddenWordEntry]
+) -> list[dict[str, str]]:
+    conn.execute(
+        "DELETE FROM workflow_forbidden_words WHERE workflow_id = ?", (workflow_id,)
+    )
+    now = _utc_now()
+    seen: set[str] = set()
+    for e in entries:
+        w = e.word.strip().lower()
+        if w and w not in seen:
+            seen.add(w)
+            conn.execute(
+                """
+                INSERT INTO workflow_forbidden_words(workflow_id, word, action, created_at)
+                VALUES (?, ?, ?, ?)
+                """,
+                (workflow_id, w, e.action, now),
+            )
+    return _get_workflow_forbidden_words(conn, workflow_id)
+
+
+def _check_confidentiality(
+    journal: str, post: str, conn: sqlite3.Connection, workflow_id: int
+) -> list[str]:
+    """Return sorted list of forbidden words found in journal or post (word-boundary match).
+    Effective word list = (global + workflow 'add') - workflow 'remove'."""
+    effective: set[str] = {w.lower() for w in _get_global_forbidden_words(conn)}
+    for entry in _get_workflow_forbidden_words(conn, workflow_id):
+        w = entry["word"].lower()
+        if entry["action"] == "add":
+            effective.add(w)
+        elif entry["action"] == "remove":
+            effective.discard(w)
+    if not effective:
+        return []
+    text = (journal + " " + post).lower()
+    return sorted(w for w in effective if re.search(r"\b" + re.escape(w) + r"\b", text))
+
+
+# ---------------------------------------------------------------------------
+# US-4.3 — Draft helpers
+# ---------------------------------------------------------------------------
+
+
+def _save_draft(
+    conn: sqlite3.Connection,
+    workflow_id: int,
+    journal: str,
+    post: str,
+    status: str,
+    forbidden_words_matched: list[str],
+    slot_iso: str | None = None,
+) -> int:
+    now = _utc_now()
+    cursor = conn.execute(
+        """
+        INSERT INTO workflow_drafts
+            (workflow_id, slot_iso, journal, post, status, forbidden_words_matched, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (workflow_id, slot_iso, journal, post, status, json.dumps(forbidden_words_matched), now, now),
+    )
+    assert cursor.lastrowid is not None
+    return int(cursor.lastrowid)
+
+
+def _list_drafts(conn: sqlite3.Connection, workflow_id: int) -> list[dict[str, Any]]:
+    rows = conn.execute(
+        """
+        SELECT id, workflow_id, slot_iso, journal, post, status,
+               forbidden_words_matched, created_at, updated_at
+        FROM workflow_drafts
+        WHERE workflow_id = ?
+        ORDER BY created_at DESC
+        """,
+        (workflow_id,),
+    ).fetchall()
+    return [
+        {
+            "id": r["id"],
+            "workflow_id": r["workflow_id"],
+            "slot_iso": r["slot_iso"],
+            "journal": r["journal"],
+            "post": r["post"],
+            "status": r["status"],
+            "forbidden_words_matched": json.loads(r["forbidden_words_matched"] or "[]"),
+            "created_at": r["created_at"],
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+def _update_draft_status(
+    conn: sqlite3.Connection, workflow_id: int, draft_id: int, status: str
+) -> dict[str, Any] | None:
+    now = _utc_now()
+    conn.execute(
+        "UPDATE workflow_drafts SET status = ?, updated_at = ? WHERE id = ? AND workflow_id = ?",
+        (status, now, draft_id, workflow_id),
+    )
+    row = conn.execute(
+        """
+        SELECT id, workflow_id, slot_iso, journal, post, status,
+               forbidden_words_matched, created_at, updated_at
+        FROM workflow_drafts WHERE id = ? AND workflow_id = ?
+        """,
+        (draft_id, workflow_id),
+    ).fetchone()
+    if row is None:
+        return None
+    return {
+        "id": row["id"],
+        "workflow_id": row["workflow_id"],
+        "slot_iso": row["slot_iso"],
+        "journal": row["journal"],
+        "post": row["post"],
+        "status": row["status"],
+        "forbidden_words_matched": json.loads(row["forbidden_words_matched"] or "[]"),
+        "created_at": row["created_at"],
+        "updated_at": row["updated_at"],
+    }
+
+
+def _abandon_stale_drafts(conn: sqlite3.Connection, workflow_id: int) -> int:
+    """Mark pending_approval drafts as abandoned when the next scheduled slot has passed.
+    Returns number of drafts abandoned."""
+    now = datetime.now(timezone.utc)
+    schedule = _get_schedule(conn, workflow_id)
+    pending = conn.execute(
+        """
+        SELECT id, slot_iso, created_at FROM workflow_drafts
+        WHERE workflow_id = ? AND status = 'pending_approval'
+        """,
+        (workflow_id,),
+    ).fetchall()
+    abandoned_ids: list[int] = []
+    for row in pending:
+        slot_iso = row["slot_iso"]
+        ref_str = slot_iso if slot_iso else row["created_at"]
+        try:
+            ref_dt = datetime.fromisoformat(ref_str)
+            if ref_dt.tzinfo is None:
+                ref_dt = ref_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            continue
+        next_slots = _compute_next_slots(schedule, from_dt=ref_dt, n=1)
+        if next_slots:
+            try:
+                next_dt = datetime.fromisoformat(next_slots[0])
+                if next_dt.tzinfo is None:
+                    next_dt = next_dt.replace(tzinfo=timezone.utc)
+                if now >= next_dt:
+                    abandoned_ids.append(int(row["id"]))
+            except ValueError:
+                pass
+        else:
+            # Schedule has ended — abandon if the reference slot is in the past
+            if ref_dt < now:
+                abandoned_ids.append(int(row["id"]))
+    if abandoned_ids:
+        placeholders = ",".join("?" * len(abandoned_ids))
+        now_iso = now.isoformat()
+        conn.execute(
+            f"UPDATE workflow_drafts SET status = 'abandoned', updated_at = ? WHERE id IN ({placeholders})",
+            [now_iso, *abandoned_ids],
+        )
+    return len(abandoned_ids)
+
+
+# ---------------------------------------------------------------------------
 # US-4.2 — Scheduler endpoints
 # ---------------------------------------------------------------------------
 
@@ -1519,16 +1795,127 @@ def generate(workflow_id: int) -> dict[str, Any]:
             "model": ai_config["model"],
             "error_type": err_type,
             "error_message": err_msg,
+            "draft_id": None,
         }
 
     journal, post, parse_err_type, parse_err_msg = _parse_generation_response(response_text)
+    if parse_err_type is not None:
+        return {
+            "workflow_id": workflow_id,
+            "journal": journal,
+            "post": post,
+            "provider": ai_config["provider"],
+            "model": ai_config["model"],
+            "error_type": parse_err_type,
+            "error_message": parse_err_msg,
+            "draft_id": None,
+        }
+
+    # US-4.1: check confidentiality — US-4.3: save draft for human validation
+    with _connect() as conn:
+        matched = _check_confidentiality(journal or "", post or "", conn, workflow_id)
+        if matched:
+            final_err_type: str | None = "blocked_confidentiality"
+            final_err_msg: str | None = f"blocked: {', '.join(matched)}"
+            draft_status = "blocked_confidentiality"
+        else:
+            final_err_type = None
+            final_err_msg = None
+            draft_status = "pending_approval"
+        draft_id = _save_draft(conn, workflow_id, journal or "", post or "", draft_status, matched)
+
     return {
         "workflow_id": workflow_id,
         "journal": journal,
         "post": post,
         "provider": ai_config["provider"],
         "model": ai_config["model"],
-        "error_type": parse_err_type,
-        "error_message": parse_err_msg,
+        "error_type": final_err_type,
+        "error_message": final_err_msg,
+        "draft_id": draft_id,
     }
+
+
+# ---------------------------------------------------------------------------
+# US-4.1 — Confidentiality endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/confidentiality/forbidden-words")
+def get_global_forbidden_words() -> dict[str, Any]:
+    with _connect() as conn:
+        words = _get_global_forbidden_words(conn)
+    return {"words": words}
+
+
+@app.put("/confidentiality/forbidden-words")
+def set_global_forbidden_words(payload: ForbiddenWordsUpdate) -> dict[str, Any]:
+    with _connect() as conn:
+        words = _set_global_forbidden_words(conn, payload.words)
+    return {"words": words}
+
+
+@app.get("/workflows/{workflow_id}/forbidden-words")
+def get_workflow_forbidden_words(workflow_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        entries = _get_workflow_forbidden_words(conn, workflow_id)
+    return {"workflow_id": workflow_id, "entries": entries}
+
+
+@app.put("/workflows/{workflow_id}/forbidden-words")
+def set_workflow_forbidden_words(
+    workflow_id: int, payload: WorkflowForbiddenWordsUpdate
+) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        entries = _set_workflow_forbidden_words(conn, workflow_id, payload.entries)
+    return {"workflow_id": workflow_id, "entries": entries}
+
+
+# ---------------------------------------------------------------------------
+# US-4.3 — Draft validation endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/workflows/{workflow_id}/drafts")
+def list_drafts(workflow_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        items = _list_drafts(conn, workflow_id)
+    return {"workflow_id": workflow_id, "items": items}
+
+
+@app.post("/workflows/{workflow_id}/drafts/{draft_id}/approve")
+def approve_draft(workflow_id: int, draft_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        result = _update_draft_status(conn, workflow_id, draft_id, "approved")
+    if result is None:
+        _api_error(404, "draft_not_found", f"draft {draft_id} not found for workflow {workflow_id}")
+    return result  # type: ignore[return-value]
+
+
+@app.post("/workflows/{workflow_id}/drafts/{draft_id}/reject")
+def reject_draft(workflow_id: int, draft_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        result = _update_draft_status(conn, workflow_id, draft_id, "rejected")
+    if result is None:
+        _api_error(404, "draft_not_found", f"draft {draft_id} not found for workflow {workflow_id}")
+    return result  # type: ignore[return-value]
+
+
+@app.post("/workflows/{workflow_id}/drafts/abandon-stale")
+def abandon_stale_drafts(workflow_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "workflow_not_found", f"workflow {workflow_id} not found")
+        count = _abandon_stale_drafts(conn, workflow_id)
+    return {"workflow_id": workflow_id, "abandoned_count": count}
 

@@ -242,6 +242,8 @@ struct GenerationResultDto {
     model: String,
     error_type: Option<String>,
     error_message: Option<String>,
+    #[serde(default)]
+    draft_id: Option<i64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +289,60 @@ struct ScheduleNextSlotsResponse {
 struct ScheduleMissedSlotsResponse {
     workflow_id: i64,
     missed_slots: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// US-4.1 — Confidentiality DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ForbiddenWordsDto {
+    words: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ForbiddenWordsInput {
+    words: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct WorkflowForbiddenWordEntry {
+    word: String,
+    action: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowForbiddenWordsDto {
+    workflow_id: i64,
+    entries: Vec<WorkflowForbiddenWordEntry>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct WorkflowForbiddenWordsInput {
+    entries: Vec<WorkflowForbiddenWordEntry>,
+}
+
+// ---------------------------------------------------------------------------
+// US-4.3 — Draft DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DraftDto {
+    id: i64,
+    workflow_id: i64,
+    slot_iso: Option<String>,
+    journal: String,
+    post: String,
+    status: String,
+    forbidden_words_matched: Vec<String>,
+    created_at: String,
+    updated_at: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct DraftListResponse {
+    workflow_id: i64,
+    items: Vec<DraftDto>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -862,6 +918,181 @@ fn workflow_schedule_mark_run(
         .map_err(|e| format!("invalid workflow_schedule_mark_run JSON response: {e}"))
 }
 
+// ---------------------------------------------------------------------------
+// US-4.1 — Confidentiality commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn confidentiality_forbidden_words_get() -> Result<ForbiddenWordsDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/confidentiality/forbidden-words",
+        api_url.trim_end_matches('/')
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for confidentiality_forbidden_words_get: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid confidentiality_forbidden_words_get JSON response: {e}"))
+}
+
+#[tauri::command]
+fn confidentiality_forbidden_words_set(
+    payload: ForbiddenWordsInput,
+) -> Result<ForbiddenWordsDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/confidentiality/forbidden-words",
+        api_url.trim_end_matches('/')
+    );
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for confidentiality_forbidden_words_set: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid confidentiality_forbidden_words_set JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_forbidden_words_get(workflow_id: i64) -> Result<WorkflowForbiddenWordsDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/forbidden-words",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_forbidden_words_get: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_forbidden_words_get JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_forbidden_words_set(
+    workflow_id: i64,
+    payload: WorkflowForbiddenWordsInput,
+) -> Result<WorkflowForbiddenWordsDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/forbidden-words",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_forbidden_words_set: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_forbidden_words_set JSON response: {e}"))
+}
+
+// ---------------------------------------------------------------------------
+// US-4.3 — Draft validation commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn workflow_drafts_list(workflow_id: i64) -> Result<DraftListResponse, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/drafts",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_drafts_list: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_drafts_list JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_draft_approve(workflow_id: i64, draft_id: i64) -> Result<DraftDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/drafts/{}/approve",
+        api_url.trim_end_matches('/'),
+        workflow_id,
+        draft_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .post(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_draft_approve: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_draft_approve JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_draft_reject(workflow_id: i64, draft_id: i64) -> Result<DraftDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/drafts/{}/reject",
+        api_url.trim_end_matches('/'),
+        workflow_id,
+        draft_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .post(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_draft_reject: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_draft_reject JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_drafts_abandon_stale(workflow_id: i64) -> Result<serde_json::Value, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/drafts/abandon-stale",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .post(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_drafts_abandon_stale: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_drafts_abandon_stale JSON response: {e}"))
+}
+
 fn main() -> Result<(), AppError> {
     // 1. Load merged config (default → user → project → runtime)
     let cfg = config::load()?;
@@ -948,7 +1179,15 @@ fn main() -> Result<(), AppError> {
             workflow_schedule_set,
             workflow_schedule_next_slots,
             workflow_schedule_missed_slots,
-            workflow_schedule_mark_run
+            workflow_schedule_mark_run,
+            confidentiality_forbidden_words_get,
+            confidentiality_forbidden_words_set,
+            workflow_forbidden_words_get,
+            workflow_forbidden_words_set,
+            workflow_drafts_list,
+            workflow_draft_approve,
+            workflow_draft_reject,
+            workflow_drafts_abandon_stale
         ])
         .run(tauri::generate_context!())
         .map_err(|e| AppError::Tauri(e.to_string()))
