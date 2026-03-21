@@ -7,9 +7,10 @@ import time
 import urllib.error
 import urllib.request
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generator
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 from fastapi import FastAPI, HTTPException, Request
@@ -100,6 +101,26 @@ class VoiceCriteriaUpdate(BaseModel):
     custom_instructions: str = ""
     min_length: int = Field(default=100, ge=10, le=2000)
     max_length: int = Field(default=500, ge=50, le=5000)
+
+
+# ---------------------------------------------------------------------------
+# US-4.2 — Scheduler
+# ---------------------------------------------------------------------------
+
+
+class ScheduleUpdate(BaseModel):
+    schedule_type: str = Field(default="none", pattern="^(none|one_shot|daily|weekly|monthly)$")
+    timezone: str = "UTC"
+    run_at: str | None = None
+    times: list[str] = []
+    weekdays: list[int] = []
+    monthdays: list[int] = []
+    catchup_enabled: bool = False
+
+
+class ScheduleRunMark(BaseModel):
+    slot_iso: str
+    status: str = Field(pattern="^(done|skipped|abandoned)$")
 
 
 TEXT_EXTENSIONS = {".txt", ".md"}
@@ -436,6 +457,290 @@ def _set_voice_criteria(conn: sqlite3.Connection, workflow_id: int, payload: Voi
 
 
 # ---------------------------------------------------------------------------
+# US-4.2 — Scheduler helpers
+# ---------------------------------------------------------------------------
+
+
+def _is_valid_timezone(tz_name: str) -> bool:
+    try:
+        ZoneInfo(tz_name)
+        return True
+    except (ZoneInfoNotFoundError, KeyError):
+        return False
+
+
+def _parse_hm_pairs(times: list[str]) -> list[tuple[int, int]]:
+    """Parse ['HH:MM', ...] into (hour, minute) tuples, skip malformed entries."""
+    pairs: list[tuple[int, int]] = []
+    for t in times:
+        try:
+            parts = t.split(":")
+            h, m = int(parts[0]), int(parts[1])
+            if 0 <= h <= 23 and 0 <= m <= 59:
+                pairs.append((h, m))
+        except (ValueError, IndexError):
+            continue
+    return pairs
+
+
+def _get_schedule(conn: sqlite3.Connection, workflow_id: int) -> dict[str, Any]:
+    row = conn.execute(
+        """
+        SELECT schedule_type, timezone, run_at, times_json, weekdays_json, monthdays_json, catchup_enabled
+        FROM workflow_schedules WHERE workflow_id = ?
+        """,
+        (workflow_id,),
+    ).fetchone()
+    if row is None:
+        return {
+            "workflow_id": workflow_id,
+            "schedule_type": "none",
+            "timezone": "UTC",
+            "run_at": None,
+            "times": [],
+            "weekdays": [],
+            "monthdays": [],
+            "catchup_enabled": False,
+        }
+    try:
+        times = json.loads(row["times_json"])
+        if not isinstance(times, list):
+            times = []
+    except (json.JSONDecodeError, TypeError):
+        times = []
+    try:
+        weekdays = json.loads(row["weekdays_json"])
+        if not isinstance(weekdays, list):
+            weekdays = []
+    except (json.JSONDecodeError, TypeError):
+        weekdays = []
+    try:
+        monthdays = json.loads(row["monthdays_json"])
+        if not isinstance(monthdays, list):
+            monthdays = []
+    except (json.JSONDecodeError, TypeError):
+        monthdays = []
+    return {
+        "workflow_id": workflow_id,
+        "schedule_type": row["schedule_type"],
+        "timezone": row["timezone"],
+        "run_at": row["run_at"],
+        "times": times,
+        "weekdays": weekdays,
+        "monthdays": monthdays,
+        "catchup_enabled": bool(row["catchup_enabled"]),
+    }
+
+
+def _set_schedule(
+    conn: sqlite3.Connection, workflow_id: int, payload: ScheduleUpdate
+) -> dict[str, Any]:
+    if not _is_valid_timezone(payload.timezone):
+        _api_error(422, "invalid_timezone", f"Unknown timezone: {payload.timezone}")
+    for t in payload.times:
+        parts = t.split(":")
+        try:
+            if len(parts) != 2:
+                raise ValueError
+            h, m = int(parts[0]), int(parts[1])
+            if not (0 <= h <= 23 and 0 <= m <= 59):
+                raise ValueError
+        except ValueError:
+            _api_error(422, "invalid_time_format", f"times must be 'HH:MM' (00-23:00-59), got: {t}")
+    for wd in payload.weekdays:
+        if not (0 <= wd <= 6):
+            _api_error(422, "invalid_weekday", f"weekdays must be 0-6 (Mon-Sun), got: {wd}")
+    for md in payload.monthdays:
+        if not (1 <= md <= 31):
+            _api_error(422, "invalid_monthday", f"monthdays must be 1-31, got: {md}")
+    if payload.schedule_type == "one_shot":
+        if not payload.run_at:
+            _api_error(422, "missing_run_at", "run_at is required for one_shot schedule type")
+        try:
+            datetime.fromisoformat(str(payload.run_at))
+        except ValueError:
+            _api_error(422, "invalid_run_at", f"run_at must be a valid ISO datetime: {payload.run_at}")
+    now = _utc_now()
+    conn.execute(
+        """
+        INSERT INTO workflow_schedules(
+            workflow_id, schedule_type, timezone, run_at,
+            times_json, weekdays_json, monthdays_json, catchup_enabled, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(workflow_id)
+        DO UPDATE SET
+            schedule_type = excluded.schedule_type,
+            timezone = excluded.timezone,
+            run_at = excluded.run_at,
+            times_json = excluded.times_json,
+            weekdays_json = excluded.weekdays_json,
+            monthdays_json = excluded.monthdays_json,
+            catchup_enabled = excluded.catchup_enabled,
+            updated_at = excluded.updated_at
+        """,
+        (
+            workflow_id,
+            payload.schedule_type,
+            payload.timezone,
+            payload.run_at,
+            json.dumps(payload.times),
+            json.dumps(payload.weekdays),
+            json.dumps(payload.monthdays),
+            int(payload.catchup_enabled),
+            now,
+        ),
+    )
+    return {
+        "workflow_id": workflow_id,
+        "schedule_type": payload.schedule_type,
+        "timezone": payload.timezone,
+        "run_at": payload.run_at,
+        "times": payload.times,
+        "weekdays": payload.weekdays,
+        "monthdays": payload.monthdays,
+        "catchup_enabled": payload.catchup_enabled,
+    }
+
+
+def _compute_next_slots(
+    schedule: dict[str, Any], from_dt: datetime | None = None, n: int = 5
+) -> list[str]:
+    """Return the next n UTC ISO slot datetimes strictly after from_dt (defaults to now)."""
+    if from_dt is None:
+        from_dt = datetime.now(timezone.utc)
+    stype = schedule.get("schedule_type", "none")
+    if stype == "none":
+        return []
+    tz_name = schedule.get("timezone", "UTC")
+    try:
+        tz: Any = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, KeyError):
+        tz = timezone.utc
+
+    if stype == "one_shot":
+        run_at = schedule.get("run_at")
+        if not run_at:
+            return []
+        try:
+            dt = datetime.fromisoformat(str(run_at))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=tz)
+            dt_utc = dt.astimezone(timezone.utc)
+            return [dt_utc.isoformat()] if dt_utc > from_dt else []
+        except (ValueError, OverflowError):
+            return []
+
+    hm_pairs = _parse_hm_pairs(schedule.get("times", []))
+    if not hm_pairs:
+        return []
+    weekdays: list[int] = [int(w) for w in schedule.get("weekdays", []) if 0 <= int(w) <= 6]
+    monthdays: list[int] = [int(d) for d in schedule.get("monthdays", []) if 1 <= int(d) <= 31]
+
+    slots: list[datetime] = []
+    local_from = from_dt.astimezone(tz)
+    current_date = local_from.date()
+    limit_date = current_date + timedelta(days=400)
+
+    while len(slots) < n and current_date <= limit_date:
+        include = False
+        if stype == "daily":
+            include = True
+        elif stype == "weekly":
+            include = current_date.weekday() in weekdays
+        elif stype == "monthly":
+            include = current_date.day in monthdays
+        if include:
+            for h, m in hm_pairs:
+                try:
+                    local_dt = datetime(
+                        current_date.year, current_date.month, current_date.day, h, m, tzinfo=tz
+                    )
+                    utc_dt = local_dt.astimezone(timezone.utc)
+                    if utc_dt > from_dt:
+                        slots.append(utc_dt)
+                except (ValueError, OverflowError):
+                    continue
+        current_date += timedelta(days=1)
+
+    slots.sort()
+    return [dt.isoformat() for dt in slots[:n]]
+
+
+def _compute_missed_slots(
+    conn: sqlite3.Connection,
+    workflow_id: int,
+    schedule: dict[str, Any],
+    since_dt: datetime,
+) -> list[str]:
+    """Return slots in (since_dt, now] that haven't been recorded as done/skipped."""
+    now = datetime.now(timezone.utc)
+    if since_dt >= now:
+        return []
+    stype = schedule.get("schedule_type", "none")
+    if stype == "none":
+        return []
+    tz_name = schedule.get("timezone", "UTC")
+    try:
+        tz: Any = ZoneInfo(tz_name)
+    except (ZoneInfoNotFoundError, KeyError):
+        tz = timezone.utc
+
+    all_slots: list[datetime] = []
+
+    if stype == "one_shot":
+        run_at = schedule.get("run_at")
+        if run_at:
+            try:
+                dt = datetime.fromisoformat(str(run_at))
+                if dt.tzinfo is None:
+                    dt = dt.replace(tzinfo=tz)
+                dt_utc = dt.astimezone(timezone.utc)
+                if since_dt < dt_utc <= now:
+                    all_slots.append(dt_utc)
+            except (ValueError, OverflowError):
+                pass
+    else:
+        hm_pairs = _parse_hm_pairs(schedule.get("times", []))
+        weekdays: list[int] = [int(w) for w in schedule.get("weekdays", []) if 0 <= int(w) <= 6]
+        monthdays: list[int] = [int(d) for d in schedule.get("monthdays", []) if 1 <= int(d) <= 31]
+        if hm_pairs:
+            current_date = since_dt.astimezone(tz).date()
+            end_date = now.astimezone(tz).date() + timedelta(days=1)
+            while current_date <= end_date:
+                include = False
+                if stype == "daily":
+                    include = True
+                elif stype == "weekly":
+                    include = current_date.weekday() in weekdays
+                elif stype == "monthly":
+                    include = current_date.day in monthdays
+                if include:
+                    for h, m in hm_pairs:
+                        try:
+                            local_dt = datetime(
+                                current_date.year, current_date.month, current_date.day, h, m, tzinfo=tz
+                            )
+                            utc_dt = local_dt.astimezone(timezone.utc)
+                            if since_dt < utc_dt <= now:
+                                all_slots.append(utc_dt)
+                        except (ValueError, OverflowError):
+                            continue
+                current_date += timedelta(days=1)
+
+    all_slots.sort()
+    all_slot_isos = [dt.isoformat() for dt in all_slots]
+    if not all_slot_isos:
+        return []
+    placeholders = ",".join("?" * len(all_slot_isos))
+    executed_rows = conn.execute(
+        f"SELECT slot_iso FROM schedule_runs WHERE workflow_id = ? AND slot_iso IN ({placeholders}) AND status IN ('done', 'skipped')",  # noqa: S608
+        [workflow_id, *all_slot_isos],
+    ).fetchall()
+    executed_isos = {row["slot_iso"] for row in executed_rows}
+    return [iso for iso in all_slot_isos if iso not in executed_isos]
+
+
+# ---------------------------------------------------------------------------
 # US-3.1 — AI provider adapter
 # ---------------------------------------------------------------------------
 
@@ -754,6 +1059,45 @@ def init_db(db_path: str) -> int:
                 (6, _utc_now()),
             )
 
+        migration_v7_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 7"
+        ).fetchone()
+
+        if not migration_v7_applied:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workflow_schedules (
+                    workflow_id INTEGER PRIMARY KEY,
+                    schedule_type TEXT NOT NULL DEFAULT 'none',
+                    timezone TEXT NOT NULL DEFAULT 'UTC',
+                    run_at TEXT,
+                    times_json TEXT NOT NULL DEFAULT '[]',
+                    weekdays_json TEXT NOT NULL DEFAULT '[]',
+                    monthdays_json TEXT NOT NULL DEFAULT '[]',
+                    catchup_enabled INTEGER NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL,
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schedule_runs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    workflow_id INTEGER NOT NULL,
+                    slot_iso TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    created_at TEXT NOT NULL,
+                    UNIQUE(workflow_id, slot_iso),
+                    FOREIGN KEY (workflow_id) REFERENCES workflows(id) ON DELETE CASCADE
+                )
+                """
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (7, _utc_now()),
+            )
+
         current_version = conn.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
         ).fetchone()[0]
@@ -1058,6 +1402,79 @@ def set_voice_criteria(workflow_id: int, payload: VoiceCriteriaUpdate) -> dict[s
 # ---------------------------------------------------------------------------
 # US-3.1 — Generation endpoint
 # ---------------------------------------------------------------------------
+
+
+# ---------------------------------------------------------------------------
+# US-4.2 — Scheduler endpoints
+# ---------------------------------------------------------------------------
+
+
+@app.get("/workflows/{workflow_id}/schedule")
+def get_schedule(workflow_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "not_found", f"workflow {workflow_id} not found")
+        return _get_schedule(conn, workflow_id)
+
+
+@app.put("/workflows/{workflow_id}/schedule")
+def set_schedule(workflow_id: int, payload: ScheduleUpdate) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "not_found", f"workflow {workflow_id} not found")
+        return _set_schedule(conn, workflow_id, payload)
+
+
+@app.get("/workflows/{workflow_id}/schedule/next-slots")
+def get_next_slots(workflow_id: int) -> dict[str, Any]:
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "not_found", f"workflow {workflow_id} not found")
+        schedule = _get_schedule(conn, workflow_id)
+    next_slots = _compute_next_slots(schedule)
+    return {"workflow_id": workflow_id, "next_slots": next_slots}
+
+
+@app.get("/workflows/{workflow_id}/schedule/missed-slots")
+def get_missed_slots(workflow_id: int, since: str | None = None) -> dict[str, Any]:
+    """Return missed slots since the given ISO datetime (defaults to 24 h ago)."""
+    if since:
+        try:
+            since_dt = datetime.fromisoformat(since)
+            if since_dt.tzinfo is None:
+                since_dt = since_dt.replace(tzinfo=timezone.utc)
+        except ValueError:
+            _api_error(422, "invalid_since", f"since must be a valid ISO datetime, got: {since}")
+            return {}  # unreachable; satisfies type checker
+    else:
+        since_dt = datetime.now(timezone.utc) - timedelta(hours=24)
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "not_found", f"workflow {workflow_id} not found")
+        schedule = _get_schedule(conn, workflow_id)
+        missed = _compute_missed_slots(conn, workflow_id, schedule, since_dt)
+    return {"workflow_id": workflow_id, "missed_slots": missed}
+
+
+@app.post("/workflows/{workflow_id}/schedule/mark-run")
+def mark_schedule_run(workflow_id: int, payload: ScheduleRunMark) -> dict[str, Any]:
+    """Record the execution status of a slot to prevent re-execution (dedup)."""
+    with _connect() as conn:
+        if not _workflow_exists(conn, workflow_id):
+            _api_error(404, "not_found", f"workflow {workflow_id} not found")
+        now = _utc_now()
+        try:
+            conn.execute(
+                "INSERT INTO schedule_runs(workflow_id, slot_iso, status, created_at) VALUES (?, ?, ?, ?)",
+                (workflow_id, payload.slot_iso, payload.status, now),
+            )
+        except sqlite3.IntegrityError:
+            _api_error(
+                409,
+                "slot_already_recorded",
+                f"slot {payload.slot_iso} already recorded for workflow {workflow_id}",
+            )
+    return {"workflow_id": workflow_id, "slot_iso": payload.slot_iso, "status": payload.status}
 
 
 @app.post("/workflows/{workflow_id}/generate")

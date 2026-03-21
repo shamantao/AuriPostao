@@ -2,6 +2,7 @@ import unittest
 import unittest.mock
 import sqlite3
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -39,7 +40,7 @@ class ApiDatabaseTests(unittest.TestCase):
             db_path = Path(tmpdir) / "auripostao.db"
             version = init_db(str(db_path))
 
-            self.assertEqual(version, 6)
+            self.assertEqual(version, 7)
 
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
@@ -57,6 +58,8 @@ class ApiDatabaseTests(unittest.TestCase):
                     "workflow_source_configs",
                     "workflow_ai_configs",
                     "workflow_voice_criteria",
+                    "workflow_schedules",
+                    "schedule_runs",
                 }.issubset(tables)
             )
 
@@ -70,7 +73,7 @@ class ApiDatabaseTests(unittest.TestCase):
                     "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
                 ).fetchone()[0]
 
-            self.assertEqual(version, 6)
+            self.assertEqual(version, 7)
 
     def test_workflows_enforces_unique_name_per_local_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -733,6 +736,280 @@ class OpenAICompatUrlNormalizationTests(unittest.TestCase):
         mock_urlopen.side_effect = fake_open
         api_main._call_openai_compat("http://localhost:8200", "mymodel", "hello", 10)
         self.assertEqual(captured[0], "http://localhost:8200/v1/chat/completions")
+
+
+class ApiSchedulerTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "auripostao.db")
+        self.original_db_path = api_main.DB_PATH
+        api_main.DB_PATH = self.db_path
+        init_db(self.db_path)
+        self.client = TestClient(app)
+        self.client.put("/channels/dummy", json={"enabled": True})
+        created = self.client.post(
+            "/workflows",
+            json={"name": "WF sched", "description": "", "is_active": True, "channels": ["dummy"]},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.workflow_id = created.json()["id"]
+
+    def tearDown(self) -> None:
+        api_main.DB_PATH = self.original_db_path
+        self.tmpdir.cleanup()
+
+    def test_schedule_default_values(self) -> None:
+        resp = self.client.get(f"/workflows/{self.workflow_id}/schedule")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["schedule_type"], "none")
+        self.assertEqual(body["timezone"], "UTC")
+        self.assertIsNone(body["run_at"])
+        self.assertEqual(body["times"], [])
+        self.assertEqual(body["weekdays"], [])
+        self.assertEqual(body["monthdays"], [])
+        self.assertFalse(body["catchup_enabled"])
+
+    def test_set_and_get_daily_schedule(self) -> None:
+        put = self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={
+                "schedule_type": "daily",
+                "timezone": "Europe/Paris",
+                "times": ["09:00", "18:00"],
+                "catchup_enabled": True,
+            },
+        )
+        self.assertEqual(put.status_code, 200)
+        body = put.json()
+        self.assertEqual(body["schedule_type"], "daily")
+        self.assertEqual(body["timezone"], "Europe/Paris")
+        self.assertEqual(body["times"], ["09:00", "18:00"])
+        self.assertTrue(body["catchup_enabled"])
+
+        get = self.client.get(f"/workflows/{self.workflow_id}/schedule")
+        self.assertEqual(get.status_code, 200)
+        self.assertEqual(get.json()["times"], ["09:00", "18:00"])
+
+    def test_set_weekly_schedule(self) -> None:
+        put = self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={
+                "schedule_type": "weekly",
+                "timezone": "UTC",
+                "times": ["10:00"],
+                "weekdays": [0, 4],
+            },
+        )
+        self.assertEqual(put.status_code, 200)
+        self.assertEqual(sorted(put.json()["weekdays"]), [0, 4])
+
+    def test_set_monthly_schedule(self) -> None:
+        put = self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={
+                "schedule_type": "monthly",
+                "timezone": "UTC",
+                "times": ["08:00"],
+                "monthdays": [1, 15],
+            },
+        )
+        self.assertEqual(put.status_code, 200)
+        self.assertEqual(sorted(put.json()["monthdays"]), [1, 15])
+
+    def test_set_one_shot_schedule(self) -> None:
+        put = self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={
+                "schedule_type": "one_shot",
+                "timezone": "UTC",
+                "run_at": "2030-01-01T12:00:00+00:00",
+            },
+        )
+        self.assertEqual(put.status_code, 200)
+        self.assertEqual(put.json()["run_at"], "2030-01-01T12:00:00+00:00")
+
+    def test_schedule_unknown_workflow_returns_404(self) -> None:
+        resp = self.client.get("/workflows/99999/schedule")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["code"], "not_found")
+
+    def test_invalid_schedule_type_returns_422(self) -> None:
+        resp = self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "hourly"},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+    def test_invalid_timezone_returns_422(self) -> None:
+        resp = self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "daily", "timezone": "Not/A/Timezone", "times": ["09:00"]},
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["code"], "invalid_timezone")
+
+    def test_one_shot_without_run_at_returns_422(self) -> None:
+        resp = self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "one_shot", "timezone": "UTC"},
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["code"], "missing_run_at")
+
+    def test_next_slots_none_returns_empty(self) -> None:
+        resp = self.client.get(f"/workflows/{self.workflow_id}/schedule/next-slots")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["next_slots"], [])
+
+    def test_next_slots_daily_returns_sorted_upcoming(self) -> None:
+        self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "daily", "timezone": "UTC", "times": ["06:00", "18:00"]},
+        )
+        resp = self.client.get(f"/workflows/{self.workflow_id}/schedule/next-slots")
+        self.assertEqual(resp.status_code, 200)
+        slots = resp.json()["next_slots"]
+        self.assertEqual(len(slots), 5)
+        now = datetime.now(timezone.utc)
+        for slot in slots:
+            self.assertGreater(datetime.fromisoformat(slot), now)
+        self.assertEqual(slots, sorted(slots))
+
+    def test_next_slots_weekly_returns_correct_weekday(self) -> None:
+        self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "weekly", "timezone": "UTC", "times": ["10:00"], "weekdays": [0]},
+        )
+        resp = self.client.get(f"/workflows/{self.workflow_id}/schedule/next-slots")
+        self.assertEqual(resp.status_code, 200)
+        slots = resp.json()["next_slots"]
+        self.assertEqual(len(slots), 5)
+        for slot in slots:
+            self.assertEqual(datetime.fromisoformat(slot).weekday(), 0)
+
+    def test_missed_slots_returns_list(self) -> None:
+        self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "daily", "timezone": "UTC", "times": ["00:01"]},
+        )
+        since = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat()
+        resp = self.client.get(
+            f"/workflows/{self.workflow_id}/schedule/missed-slots",
+            params={"since": since},
+        )
+        self.assertEqual(resp.status_code, 200)
+        missed = resp.json()["missed_slots"]
+        self.assertGreaterEqual(len(missed), 1)
+        self.assertLessEqual(len(missed), 2)
+
+    def test_slot_dedup_prevents_duplicate_mark(self) -> None:
+        slot = "2026-01-01T09:00:00+00:00"
+        first = self.client.post(
+            f"/workflows/{self.workflow_id}/schedule/mark-run",
+            json={"slot_iso": slot, "status": "done"},
+        )
+        self.assertEqual(first.status_code, 200)
+        second = self.client.post(
+            f"/workflows/{self.workflow_id}/schedule/mark-run",
+            json={"slot_iso": slot, "status": "done"},
+        )
+        self.assertEqual(second.status_code, 409)
+        self.assertEqual(second.json()["code"], "slot_already_recorded")
+
+    def test_mark_run_unknown_workflow_returns_404(self) -> None:
+        resp = self.client.post(
+            "/workflows/99999/schedule/mark-run",
+            json={"slot_iso": "2026-01-01T09:00:00+00:00", "status": "done"},
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_schedule_deleted_with_workflow(self) -> None:
+        self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "daily", "timezone": "UTC", "times": ["09:00"]},
+        )
+        self.client.delete(f"/workflows/{self.workflow_id}")
+        resp = self.client.get(f"/workflows/{self.workflow_id}/schedule")
+        self.assertEqual(resp.status_code, 404)
+
+
+class SchedulerSlotComputationTests(unittest.TestCase):
+    """Pure logic tests for _compute_next_slots (no HTTP)."""
+
+    def _schedule(self, **kwargs) -> dict:  # type: ignore[override]
+        base = {
+            "workflow_id": 1,
+            "schedule_type": "none",
+            "timezone": "UTC",
+            "run_at": None,
+            "times": [],
+            "weekdays": [],
+            "monthdays": [],
+            "catchup_enabled": False,
+        }
+        base.update(kwargs)
+        return base
+
+    def test_none_type_returns_empty(self) -> None:
+        result = api_main._compute_next_slots(self._schedule(schedule_type="none"))
+        self.assertEqual(result, [])
+
+    def test_daily_returns_n_sorted_future_slots(self) -> None:
+        from_dt = datetime(2026, 3, 21, 10, 0, tzinfo=timezone.utc)
+        schedule = self._schedule(schedule_type="daily", timezone="UTC", times=["09:00", "15:00"])
+        result = api_main._compute_next_slots(schedule, from_dt=from_dt, n=4)
+        self.assertEqual(len(result), 4)
+        # 09:00 is before from_dt=10:00, so first slot is today 15:00
+        self.assertIn("2026-03-21T15:00:00+00:00", result)
+        self.assertIn("2026-03-22T09:00:00+00:00", result)
+        self.assertEqual(result, sorted(result))
+
+    def test_weekly_returns_correct_weekdays(self) -> None:
+        # 2026-03-21 is a Saturday (weekday=5); next Monday is 2026-03-23
+        from_dt = datetime(2026, 3, 21, 0, 0, tzinfo=timezone.utc)
+        schedule = self._schedule(schedule_type="weekly", timezone="UTC", times=["10:00"], weekdays=[0])
+        result = api_main._compute_next_slots(schedule, from_dt=from_dt, n=3)
+        self.assertEqual(len(result), 3)
+        for slot in result:
+            self.assertEqual(datetime.fromisoformat(slot).weekday(), 0)
+
+    def test_monthly_returns_correct_monthdays(self) -> None:
+        from_dt = datetime(2026, 3, 21, 12, 0, tzinfo=timezone.utc)
+        schedule = self._schedule(schedule_type="monthly", timezone="UTC", times=["08:00"], monthdays=[1, 15])
+        result = api_main._compute_next_slots(schedule, from_dt=from_dt, n=4)
+        self.assertEqual(len(result), 4)
+        for slot in result:
+            self.assertIn(datetime.fromisoformat(slot).day, [1, 15])
+
+    def test_one_shot_future_returns_one_slot(self) -> None:
+        from_dt = datetime(2026, 3, 21, 0, 0, tzinfo=timezone.utc)
+        schedule = self._schedule(schedule_type="one_shot", timezone="UTC", run_at="2030-06-15T09:00:00+00:00")
+        result = api_main._compute_next_slots(schedule, from_dt=from_dt, n=5)
+        self.assertEqual(len(result), 1)
+        self.assertIn("2030-06-15T09:00:00+00:00", result)
+
+    def test_one_shot_past_returns_empty(self) -> None:
+        from_dt = datetime(2026, 3, 21, 0, 0, tzinfo=timezone.utc)
+        schedule = self._schedule(schedule_type="one_shot", timezone="UTC", run_at="2020-01-01T09:00:00+00:00")
+        result = api_main._compute_next_slots(schedule, from_dt=from_dt, n=5)
+        self.assertEqual(result, [])
+
+    def test_daily_no_times_returns_empty(self) -> None:
+        from_dt = datetime(2026, 3, 21, 10, 0, tzinfo=timezone.utc)
+        result = api_main._compute_next_slots(
+            self._schedule(schedule_type="daily", timezone="UTC", times=[]),
+            from_dt=from_dt,
+        )
+        self.assertEqual(result, [])
+
+    def test_weekly_no_weekdays_returns_empty(self) -> None:
+        from_dt = datetime(2026, 3, 21, 10, 0, tzinfo=timezone.utc)
+        result = api_main._compute_next_slots(
+            self._schedule(schedule_type="weekly", timezone="UTC", times=["10:00"], weekdays=[]),
+            from_dt=from_dt,
+        )
+        self.assertEqual(result, [])
 
 
 if __name__ == "__main__":

@@ -244,6 +244,51 @@ struct GenerationResultDto {
     error_message: Option<String>,
 }
 
+// ---------------------------------------------------------------------------
+// US-4.2 — Scheduler DTOs
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScheduleDto {
+    workflow_id: i64,
+    schedule_type: String,
+    timezone: String,
+    run_at: Option<String>,
+    times: Vec<String>,
+    weekdays: Vec<i64>,
+    monthdays: Vec<i64>,
+    catchup_enabled: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScheduleInput {
+    schedule_type: String,
+    timezone: String,
+    run_at: Option<String>,
+    times: Vec<String>,
+    weekdays: Vec<i64>,
+    monthdays: Vec<i64>,
+    catchup_enabled: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScheduleRunMarkInput {
+    slot_iso: String,
+    status: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScheduleNextSlotsResponse {
+    workflow_id: i64,
+    next_slots: Vec<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct ScheduleMissedSlotsResponse {
+    workflow_id: i64,
+    missed_slots: Vec<String>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ApiError {
     code: String,
@@ -700,6 +745,123 @@ async fn workflow_generate(workflow_id: i64) -> Result<GenerationResultDto, Stri
         .map_err(|e| format!("invalid workflow_generate JSON response: {e}"))
 }
 
+// ---------------------------------------------------------------------------
+// US-4.2 — Scheduler commands
+// ---------------------------------------------------------------------------
+
+#[tauri::command]
+fn workflow_schedule_get(workflow_id: i64) -> Result<ScheduleDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/schedule",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_schedule_get: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_schedule_get JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_schedule_set(workflow_id: i64, payload: ScheduleInput) -> Result<ScheduleDto, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/schedule",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .put(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_schedule_set: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_schedule_set JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_schedule_next_slots(workflow_id: i64) -> Result<ScheduleNextSlotsResponse, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/schedule/next-slots",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .get(&url)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_schedule_next_slots: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_schedule_next_slots JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_schedule_missed_slots(
+    workflow_id: i64,
+    since: Option<String>,
+) -> Result<ScheduleMissedSlotsResponse, String> {
+    let api_url = api_base_url();
+    let base_url = format!(
+        "{}/workflows/{}/schedule/missed-slots",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let mut req = client.get(&base_url);
+    if let Some(s) = &since {
+        if !s.is_empty() {
+            req = req.query(&[("since", s.as_str())]);
+        }
+    }
+    let resp = req
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_schedule_missed_slots: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_schedule_missed_slots JSON response: {e}"))
+}
+
+#[tauri::command]
+fn workflow_schedule_mark_run(
+    workflow_id: i64,
+    payload: ScheduleRunMarkInput,
+) -> Result<serde_json::Value, String> {
+    let api_url = api_base_url();
+    let url = format!(
+        "{}/workflows/{}/schedule/mark-run",
+        api_url.trim_end_matches('/'),
+        workflow_id
+    );
+    let client = build_client()?;
+    let resp = client
+        .post(&url)
+        .json(&payload)
+        .send()
+        .map_err(|e| format!("api unreachable for workflow_schedule_mark_run: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(api_error_from_response(resp));
+    }
+    resp.json()
+        .map_err(|e| format!("invalid workflow_schedule_mark_run JSON response: {e}"))
+}
+
 fn main() -> Result<(), AppError> {
     // 1. Load merged config (default → user → project → runtime)
     let cfg = config::load()?;
@@ -781,7 +943,12 @@ fn main() -> Result<(), AppError> {
             workflow_voice_criteria_set,
             workflow_generate,
             pick_text_files,
-            pick_directory
+            pick_directory,
+            workflow_schedule_get,
+            workflow_schedule_set,
+            workflow_schedule_next_slots,
+            workflow_schedule_missed_slots,
+            workflow_schedule_mark_run
         ])
         .run(tauri::generate_context!())
         .map_err(|e| AppError::Tauri(e.to_string()))
