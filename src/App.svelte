@@ -3,7 +3,7 @@
   import { invoke } from "@tauri-apps/api/core";
   import { onMount } from "svelte";
 
-  type AppTab = "studio" | "dashboard" | "settings";
+  type AppTab = "studio" | "planning" | "dashboard" | "settings";
 
   type ApiHealthStatus = {
     api_state: "connectee" | "deconnectee";
@@ -101,6 +101,7 @@
     model: string;
     error_type: string | null;
     error_message: string | null;
+    draft_id: number | null;
   };
 
   type GenerationHistoryEntry = {
@@ -109,6 +110,37 @@
     post: string | null;
     provider: string;
     model: string;
+  };
+
+  // US-4.4 — Planning types
+  type ScheduleDto = {
+    workflow_id: number;
+    schedule_type: string;
+    timezone: string;
+    run_at: string | null;
+    times: string[];
+    weekdays: number[];
+    monthdays: number[];
+    catchup_enabled: boolean;
+  };
+
+  type DraftStatus = "pending_approval" | "approved" | "rejected" | "abandoned" | "blocked_confidentiality";
+
+  type DraftDto = {
+    id: number;
+    workflow_id: number;
+    slot_iso: string | null;
+    journal: string;
+    post: string;
+    status: DraftStatus;
+    forbidden_words_matched: string[];
+    created_at: string;
+    updated_at: string;
+  };
+
+  type DraftListResponse = {
+    workflow_id: number;
+    items: DraftDto[];
   };
 
   const defaultTomlText = `# AuriPostao - Default Configuration
@@ -200,6 +232,21 @@ include_failed = true`;
   let genConfigSaved = false;
   let genElapsed = 0;
   let _genTimer: ReturnType<typeof setInterval> | null = null;
+
+  // US-4.4 — Planning & Moderation state
+  let planningWorkflowId: number | null = null;
+  let planningLoading = false;
+  let planningError = "";
+  let planningSchedule: ScheduleDto | null = null;
+  let planningNextSlots: string[] = [];
+  let planningDrafts: DraftDto[] = [];
+  let planningAbandonCount: number | null = null;
+  let draftFilter: "all" | "pending" = "pending";
+
+  $: filteredDrafts =
+    draftFilter === "pending"
+      ? planningDrafts.filter((d) => d.status === "pending_approval")
+      : planningDrafts;
 
   let form: WorkflowForm = {
     name: "",
@@ -363,6 +410,7 @@ include_failed = true`;
   async function openWorkflowDocument(workflow: Workflow) {
     isCreatingWorkflow = false;
     selectedWorkflowId = workflow.id;
+    planningWorkflowId = workflow.id;
     workflowsInfo = "";
 
     form = {
@@ -698,7 +746,22 @@ include_failed = true`;
           },
           ...generationHistory,
         ].slice(0, 3);
-        generationInfo = `Generation complete in ${genElapsed}s.`;
+        const draftNote =
+          result.draft_id != null
+            ? ` Draft #${result.draft_id} saved — validate it in the Planning tab.`
+            : "";
+        generationInfo = `Generation complete in ${genElapsed}s.${draftNote}`;
+        if (planningWorkflowId === selectedWorkflowId) {
+          void loadPlanningData();
+        }
+      } else if (result.error_type === "blocked_confidentiality") {
+        const words = result.error_message?.replace("blocked: ", "") ?? "";
+        generationError = `Content blocked — forbidden words: ${words}.${
+          result.draft_id != null ? ` Draft #${result.draft_id} saved as blocked.` : ""
+        } See Planning tab.`;
+        if (planningWorkflowId === selectedWorkflowId) {
+          void loadPlanningData();
+        }
       } else {
         generationError = formatGenerationError(result.error_type, result.error_message);
       }
@@ -707,6 +770,143 @@ include_failed = true`;
     } finally {
       if (_genTimer) { clearInterval(_genTimer); _genTimer = null; }
       generationLoading = false;
+    }
+  }
+
+  // US-4.4 — Planning helpers
+  function formatSlotDate(iso: string): string {
+    try {
+      return new Date(iso).toLocaleString("fr-FR", {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "UTC",
+      }) + " UTC";
+    } catch {
+      return iso;
+    }
+  }
+
+  function statusLabel(status: DraftStatus): string {
+    const map: Record<DraftStatus, string> = {
+      pending_approval: "Pending",
+      approved: "Approved",
+      rejected: "Rejected",
+      abandoned: "Abandoned",
+      blocked_confidentiality: "Blocked",
+    };
+    return map[status] ?? status;
+  }
+
+  function statusBadgeClass(status: DraftStatus): string {
+    const map: Record<DraftStatus, string> = {
+      pending_approval: "badge-pending",
+      approved: "badge-ok",
+      rejected: "badge-ko",
+      abandoned: "badge-muted",
+      blocked_confidentiality: "badge-blocked",
+    };
+    return map[status] ?? "";
+  }
+
+  function slotScheduleTypeLabel(stype: string): string {
+    const map: Record<string, string> = {
+      none: "No schedule",
+      one_shot: "One-shot",
+      daily: "Daily",
+      weekly: "Weekly",
+      monthly: "Monthly",
+    };
+    return map[stype] ?? stype;
+  }
+
+  function groupSlotsByDate(slots: string[]): Array<{ date: string; times: string[] }> {
+    const grouped: Record<string, string[]> = {};
+    for (const iso of slots) {
+      try {
+        const d = new Date(iso);
+        const dateKey = d.toLocaleDateString("fr-FR", {
+          weekday: "long",
+          year: "numeric",
+          month: "long",
+          day: "numeric",
+          timeZone: "UTC",
+        });
+        const timeStr = d.toLocaleTimeString("fr-FR", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: "UTC",
+        }) + " UTC";
+        (grouped[dateKey] ??= []).push(timeStr);
+      } catch {
+        (grouped[iso] ??= []).push(iso);
+      }
+    }
+    return Object.entries(grouped).map(([date, times]) => ({ date, times }));
+  }
+
+  async function loadPlanningData() {
+    if (planningWorkflowId == null) return;
+    planningLoading = true;
+    planningError = "";
+    planningAbandonCount = null;
+    try {
+      const [sched, slotsResp, draftsResp] = await Promise.all([
+        invoke<ScheduleDto>("workflow_schedule_get", { workflowId: planningWorkflowId }),
+        invoke<{ workflow_id: number; next_slots: string[] }>("workflow_schedule_next_slots", {
+          workflowId: planningWorkflowId,
+        }),
+        invoke<DraftListResponse>("workflow_drafts_list", { workflowId: planningWorkflowId }),
+      ]);
+      planningSchedule = sched;
+      planningNextSlots = slotsResp.next_slots;
+      planningDrafts = draftsResp.items;
+    } catch (e) {
+      planningError = invokeError(e);
+    } finally {
+      planningLoading = false;
+    }
+  }
+
+  async function approveDraft(draftId: number) {
+    if (planningWorkflowId == null) return;
+    planningError = "";
+    try {
+      await invoke("workflow_draft_approve", { workflowId: planningWorkflowId, draftId });
+      await loadPlanningData();
+    } catch (e) {
+      planningError = invokeError(e);
+    }
+  }
+
+  async function rejectDraft(draftId: number) {
+    if (planningWorkflowId == null) return;
+    planningError = "";
+    try {
+      await invoke("workflow_draft_reject", { workflowId: planningWorkflowId, draftId });
+      await loadPlanningData();
+    } catch (e) {
+      planningError = invokeError(e);
+    }
+  }
+
+  async function abandonStaleDrafts() {
+    if (planningWorkflowId == null) return;
+    planningLoading = true;
+    planningAbandonCount = null;
+    try {
+      const result = await invoke<{ workflow_id: number; abandoned_count: number }>(
+        "workflow_drafts_abandon_stale",
+        { workflowId: planningWorkflowId },
+      );
+      planningAbandonCount = result.abandoned_count;
+      await loadPlanningData();
+    } catch (e) {
+      planningError = invokeError(e);
+    } finally {
+      planningLoading = false;
     }
   }
 
@@ -726,6 +926,7 @@ include_failed = true`;
 
   <nav class="tabs" aria-label="Navigation principale">
     <button class:active={activeTab === "studio"} on:click={() => (activeTab = "studio")}>Workflow Studio</button>
+    <button class:active={activeTab === "planning"} on:click={() => { activeTab = "planning"; void loadPlanningData(); }}>Planning</button>
     <button class:active={activeTab === "dashboard"} on:click={() => (activeTab = "dashboard")}>Dashboard</button>
     <button class:active={activeTab === "settings"} on:click={() => (activeTab = "settings")}>Settings</button>
   </nav>
@@ -1032,6 +1233,163 @@ include_failed = true`;
           </div>
         {/if}
       </article>
+    </section>
+  {/if}
+
+  {#if activeTab === "planning"}
+    <section class="card planning-console">
+      <h2>Planning &amp; Moderation</h2>
+      <p class="muted">Vue des créneaux planifiés et file de validation des brouillons.</p>
+
+      <div class="planning-toolbar">
+        <label class="planning-select-label">
+          Workflow
+          <select
+            bind:value={planningWorkflowId}
+            on:change={() => { planningDrafts = []; planningNextSlots = []; planningSchedule = null; void loadPlanningData(); }}
+          >
+            <option value={null}>— Sélectionner un workflow —</option>
+            {#each workflows as w}
+              <option value={w.id}>{w.name}  ·  #{w.id}  ·  {w.is_active ? "actif" : "inactif"}</option>
+            {/each}
+          </select>
+        </label>
+        <button type="button" class="secondary" on:click={loadPlanningData} disabled={planningLoading || planningWorkflowId == null}>
+          {planningLoading ? "Chargement..." : "↻ Actualiser"}
+        </button>
+      </div>
+
+      {#if planningError}<p class="ko">{planningError}</p>{/if}
+
+      {#if planningWorkflowId == null}
+        <p class="muted planning-empty">Sélectionnez un workflow pour afficher son planning et ses brouillons.</p>
+      {:else}
+        <!-- ====== UPCOMING SLOTS ====== -->
+        <div class="planning-section">
+          <h3 class="planning-section-title">
+            ⏰ Créneaux à venir
+            {#if planningSchedule}
+              <span class="badge-status badge-info">{slotScheduleTypeLabel(planningSchedule.schedule_type)}</span>
+              {#if planningSchedule.schedule_type !== "none"}
+                <span class="badge-status badge-muted">{planningSchedule.timezone}</span>
+              {/if}
+            {/if}
+          </h3>
+
+          {#if !planningSchedule || planningSchedule.schedule_type === "none"}
+            <p class="muted">Aucun scheduler configuré pour ce workflow.</p>
+          {:else if planningNextSlots.length === 0}
+            <p class="muted">Aucun créneau à venir (planification terminée ou non-définie).</p>
+          {:else}
+            <ul class="slots-calendar">
+              {#each groupSlotsByDate(planningNextSlots) as group}
+                <li class="slot-day">
+                  <span class="slot-day-label">{group.date}</span>
+                  <span class="slot-times">
+                    {#each group.times as t}
+                      <span class="slot-chip">{t}</span>
+                    {/each}
+                  </span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        <!-- ====== DRAFT QUEUE ====== -->
+        <div class="planning-section">
+          <div class="draft-queue-header">
+            <h3 class="planning-section-title" style="margin:0">
+              📋 Brouillons ({planningDrafts.length})
+            </h3>
+            <div class="actions compact">
+              <button
+                type="button"
+                class="secondary"
+                on:click={abandonStaleDrafts}
+                disabled={planningLoading}
+                title="Marque comme abandonnés les brouillons en attente dont le slot suivant est passé"
+              >
+                ⏳ Abandon stale
+              </button>
+              {#if planningAbandonCount !== null}
+                <span class="ok" style="font-size:0.86rem; align-self:center;">
+                  {planningAbandonCount} brouillon(s) abandonné(s).
+                </span>
+              {/if}
+            </div>
+          </div>
+
+          <!-- Filter tabs -->
+          <div class="draft-filter-tabs">
+            <button
+              type="button"
+              class="filter-tab"
+              class:active={draftFilter === "pending"}
+              on:click={() => (draftFilter = "pending")}
+            >
+              En attente ({planningDrafts.filter((d) => d.status === "pending_approval").length})
+            </button>
+            <button
+              type="button"
+              class="filter-tab"
+              class:active={draftFilter === "all"}
+              on:click={() => (draftFilter = "all")}
+            >
+              Tous ({planningDrafts.length})
+            </button>
+          </div>
+
+          {#if filteredDrafts.length === 0}
+            <p class="muted">
+              {draftFilter === "pending" ? "Aucun brouillon en attente de validation." : "Aucun brouillon pour ce workflow."}
+            </p>
+          {:else}
+            <ul class="draft-list">
+              {#each filteredDrafts as draft (draft.id)}
+                <li class="draft-item">
+                  <div class="draft-item-header">
+                    <span class="badge-status {statusBadgeClass(draft.status)}">{statusLabel(draft.status)}</span>
+                    <span class="draft-id muted">#​{draft.id}</span>
+                    {#if draft.slot_iso}
+                      <span class="draft-slot muted">Slot : {formatSlotDate(draft.slot_iso)}</span>
+                    {/if}
+                    <span class="draft-date muted">{formatSlotDate(draft.created_at)}</span>
+                  </div>
+
+                  {#if draft.forbidden_words_matched.length > 0}
+                    <p class="draft-blocked-words">
+                      🚫 Mots interdits détectés : <strong>{draft.forbidden_words_matched.join(", ")}</strong>
+                    </p>
+                  {/if}
+
+                  <div class="preview-dual preview-dual-sm">
+                    <div class="preview-dual-pane">
+                      <h4>Journal</h4>
+                      <pre>{draft.journal.slice(0, 280)}{draft.journal.length > 280 ? "…" : ""}</pre>
+                    </div>
+                    <div class="preview-dual-pane">
+                      <h4>Post</h4>
+                      <pre>{draft.post.slice(0, 280)}{draft.post.length > 280 ? "…" : ""}</pre>
+                    </div>
+                  </div>
+
+                  {#if draft.status === "pending_approval"}
+                    <div class="actions draft-actions">
+                      <button type="button" class="approve-btn" on:click={() => approveDraft(draft.id)}>
+                        ✓ Approuver
+                      </button>
+                      <button type="button" class="secondary danger" on:click={() => rejectDraft(draft.id)}>
+                        ✗ Refuser
+                      </button>
+                    </div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+      {/if}
     </section>
   {/if}
 
@@ -1500,6 +1858,199 @@ include_failed = true`;
   .gen-history-meta {
     margin: 0 0 0.4rem;
     font-size: 0.82rem;
+  }
+
+  /* -----------------------------------------------------------------------
+   * US-4.4 — Planning & Moderation
+   * --------------------------------------------------------------------- */
+
+  .planning-console {
+    max-width: 100%;
+  }
+
+  .planning-toolbar {
+    display: flex;
+    gap: 0.6rem;
+    align-items: flex-end;
+    flex-wrap: wrap;
+    margin-bottom: 1.2rem;
+  }
+
+  .planning-select-label {
+    display: grid;
+    gap: 0.26rem;
+    font-size: 0.92rem;
+    flex: 1 1 260px;
+    min-width: 200px;
+  }
+
+  .planning-empty {
+    margin-top: 1.5rem;
+    text-align: center;
+    font-size: 0.94rem;
+  }
+
+  .planning-section {
+    margin-top: 1.4rem;
+    border-top: 1px solid var(--border);
+    padding-top: 0.9rem;
+  }
+
+  .planning-section-title {
+    margin: 0 0 0.7rem;
+    font-size: 0.96rem;
+    color: #d8e2ff;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+
+  /* Status badges */
+  .badge-status {
+    display: inline-block;
+    padding: 0.18rem 0.55rem;
+    border-radius: 999px;
+    font-size: 0.8rem;
+    font-weight: 600;
+    letter-spacing: 0.03em;
+    white-space: nowrap;
+  }
+
+  .badge-pending  { background: rgba(255, 190, 102, 0.18); color: var(--warn);  border: 1px solid rgba(255,190,102,0.4); }
+  .badge-ok       { background: rgba(47, 208, 140, 0.15);  color: var(--ok);    border: 1px solid rgba(47,208,140,0.35); }
+  .badge-ko       { background: rgba(255, 127, 138, 0.15); color: var(--ko);    border: 1px solid rgba(255,127,138,0.35); }
+  .badge-muted    { background: rgba(159, 176, 207, 0.12); color: var(--text-muted); border: 1px solid rgba(159,176,207,0.25); }
+  .badge-blocked  { background: rgba(172, 67, 87, 0.22);   color: #ff9faa;      border: 1px solid rgba(172,67,87,0.45); }
+  .badge-info     { background: rgba(78, 161, 255, 0.16);  color: var(--accent-2); border: 1px solid rgba(78,161,255,0.35); }
+
+  /* Upcoming slots calendar */
+  .slots-calendar {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.55rem;
+  }
+
+  .slot-day {
+    display: flex;
+    align-items: flex-start;
+    gap: 0.8rem;
+    flex-wrap: wrap;
+    padding: 0.5rem 0.7rem;
+    border: 1px solid #2b354a;
+    border-radius: 10px;
+    background: rgba(10, 14, 22, 0.4);
+  }
+
+  .slot-day-label {
+    font-size: 0.88rem;
+    color: var(--accent-2);
+    font-weight: 600;
+    white-space: nowrap;
+    min-width: 170px;
+    padding-top: 0.12rem;
+  }
+
+  .slot-times {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+  }
+
+  .slot-chip {
+    background: rgba(78, 161, 255, 0.12);
+    border: 1px solid rgba(78, 161, 255, 0.28);
+    border-radius: 6px;
+    padding: 0.22rem 0.5rem;
+    font-size: 0.82rem;
+    color: #c8d7ff;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Draft queue */
+  .draft-queue-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 0.55rem;
+    margin-bottom: 0.7rem;
+  }
+
+  .draft-filter-tabs {
+    display: flex;
+    gap: 0.35rem;
+    margin-bottom: 0.8rem;
+  }
+
+  .filter-tab {
+    background: rgba(71, 87, 117, 0.22);
+    border: 1px solid #4b607f;
+    border-radius: 8px;
+    padding: 0.32rem 0.72rem;
+    font-size: 0.86rem;
+    cursor: pointer;
+    color: var(--text-muted);
+  }
+
+  .filter-tab.active {
+    background: rgba(78, 161, 255, 0.2);
+    border-color: var(--accent-2);
+    color: var(--text-main);
+  }
+
+  .draft-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    gap: 0.8rem;
+  }
+
+  .draft-item {
+    border: 1px solid #33405b;
+    border-radius: 12px;
+    padding: 0.8rem;
+    background: rgba(10, 14, 22, 0.45);
+  }
+
+  .draft-item-header {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+    margin-bottom: 0.45rem;
+  }
+
+  .draft-id {
+    font-size: 0.82rem;
+  }
+
+  .draft-slot,
+  .draft-date {
+    font-size: 0.82rem;
+    margin-left: auto;
+  }
+
+  .draft-blocked-words {
+    font-size: 0.85rem;
+    color: var(--ko);
+    margin: 0.3rem 0;
+  }
+
+  .draft-actions {
+    margin-top: 0.55rem;
+  }
+
+  .approve-btn {
+    background: linear-gradient(135deg, rgba(47, 208, 140, 0.28), rgba(47, 208, 140, 0.12));
+    border-color: rgba(47, 208, 140, 0.5);
+  }
+
+  .approve-btn:hover {
+    background: linear-gradient(135deg, rgba(47, 208, 140, 0.4), rgba(47, 208, 140, 0.2));
   }
 
   @media (max-width: 980px) {
