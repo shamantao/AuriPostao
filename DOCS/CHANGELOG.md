@@ -1,5 +1,26 @@
 # CHANGELOG
 
+## [0.3.0] - 2026-03-21
+
+### Added (EPIC-3 — Génération IA et critères de parole)
+- US-3.1 Adaptateur IA local : interface unique pour Ollama/OpenAI-compatible, timeout 600 s, classification erreurs transiente/permanente
+- US-3.2 Critères de parole : 5 presets (Professionnel concis, etc.) + mode personnalisé, contraintes longueur min/max
+- US-3.3 Écran génération et preview : sélecteur de style, bouton Générer avec timer elapsed, double preview Journal privé / Post public, historique court, conservation workflow-centric
+- Retry automatique 3× avec back-off (5 s / 10 s) sur erreurs 5xx/timeout du provider IA
+- Correction bug double `/v1` dans l'URL OpenAI-compatible (`/v1/v1/chat/completions` → `/v1/chat/completions`)
+- Commande Tauri `workflow_generate` convertie en `async fn` (reqwest async) — élimine le freeze de l'UI pendant la génération
+- UX : auto-remplissage de la base URL selon le provider sélectionné, hints d'erreur contextuels
+- 2 tests unitaires `OpenAICompatUrlNormalizationTests` (couverture normalisation URL)
+
+### Fixed
+- Crash au démarrage `Config("missing field 'version'")` : `AppSection.version` passe en `#[serde(default)]`
+
+### Changed
+- Version crate renommée `auripostao` (was `auripostao_tao_seed`), version `0.3.0`
+- `package.json` aligné sur `0.3.0`
+
+---
+
 ## [Unreleased]
 
 ### Added

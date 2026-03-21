@@ -1,4 +1,5 @@
 import unittest
+import unittest.mock
 import sqlite3
 import tempfile
 from pathlib import Path
@@ -38,7 +39,7 @@ class ApiDatabaseTests(unittest.TestCase):
             db_path = Path(tmpdir) / "auripostao.db"
             version = init_db(str(db_path))
 
-            self.assertEqual(version, 4)
+            self.assertEqual(version, 6)
 
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
@@ -54,6 +55,8 @@ class ApiDatabaseTests(unittest.TestCase):
                     "channel_configs",
                     "workflow_channels",
                     "workflow_source_configs",
+                    "workflow_ai_configs",
+                    "workflow_voice_criteria",
                 }.issubset(tables)
             )
 
@@ -67,7 +70,7 @@ class ApiDatabaseTests(unittest.TestCase):
                     "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
                 ).fetchone()[0]
 
-            self.assertEqual(version, 4)
+            self.assertEqual(version, 6)
 
     def test_workflows_enforces_unique_name_per_local_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -467,6 +470,269 @@ class ApiWorkflowSourcesTests(unittest.TestCase):
         get = self.client.get(f"/workflows/{self.workflow_id}/sources")
         self.assertEqual(get.status_code, 404)
         self.assertEqual(get.json()["code"], "workflow_not_found")
+
+
+class ApiAIConfigTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "auripostao.db")
+        self.original_db_path = api_main.DB_PATH
+        api_main.DB_PATH = self.db_path
+        init_db(self.db_path)
+        self.client = TestClient(app)
+        self.client.put("/channels/dummy", json={"enabled": True})
+        created = self.client.post(
+            "/workflows",
+            json={"name": "WF ai", "description": "", "is_active": True, "channels": ["dummy"]},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.workflow_id = created.json()["id"]
+
+    def tearDown(self) -> None:
+        api_main.DB_PATH = self.original_db_path
+        self.tmpdir.cleanup()
+
+    def test_ai_config_default_values(self) -> None:
+        resp = self.client.get(f"/workflows/{self.workflow_id}/ai-config")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["provider"], "ollama")
+        self.assertEqual(body["model"], "llama3.2")
+        self.assertEqual(body["base_url"], "http://localhost:11434")
+        self.assertEqual(body["timeout_seconds"], 30)
+
+    def test_set_and_get_ai_config(self) -> None:
+        put = self.client.put(
+            f"/workflows/{self.workflow_id}/ai-config",
+            json={"provider": "openai_compat", "base_url": "http://localhost:8080", "model": "mistral", "timeout_seconds": 60},
+        )
+        self.assertEqual(put.status_code, 200)
+        body = put.json()
+        self.assertEqual(body["provider"], "openai_compat")
+        self.assertEqual(body["model"], "mistral")
+        self.assertEqual(body["timeout_seconds"], 60)
+
+        get = self.client.get(f"/workflows/{self.workflow_id}/ai-config")
+        self.assertEqual(get.status_code, 200)
+        self.assertEqual(get.json()["model"], "mistral")
+
+    def test_ai_config_unknown_workflow_returns_404(self) -> None:
+        resp = self.client.get("/workflows/99999/ai-config")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["code"], "workflow_not_found")
+
+    def test_ai_config_invalid_provider_returns_422(self) -> None:
+        resp = self.client.put(
+            f"/workflows/{self.workflow_id}/ai-config",
+            json={"provider": "unknown_provider", "base_url": "http://x", "model": "x", "timeout_seconds": 30},
+        )
+        self.assertEqual(resp.status_code, 422)
+
+
+class ApiVoiceCriteriaTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "auripostao.db")
+        self.original_db_path = api_main.DB_PATH
+        api_main.DB_PATH = self.db_path
+        init_db(self.db_path)
+        self.client = TestClient(app)
+        self.client.put("/channels/dummy", json={"enabled": True})
+        created = self.client.post(
+            "/workflows",
+            json={"name": "WF voice", "description": "", "is_active": True, "channels": ["dummy"]},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.workflow_id = created.json()["id"]
+
+    def tearDown(self) -> None:
+        api_main.DB_PATH = self.original_db_path
+        self.tmpdir.cleanup()
+
+    def test_voice_criteria_default_values(self) -> None:
+        resp = self.client.get(f"/workflows/{self.workflow_id}/voice-criteria")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["preset"], "professional_concise")
+        self.assertEqual(body["custom_instructions"], "")
+        self.assertEqual(body["min_length"], 100)
+        self.assertEqual(body["max_length"], 500)
+
+    def test_set_all_standard_presets(self) -> None:
+        for preset in ["professional_concise", "professional_detailed", "casual", "storytelling", "technical"]:
+            resp = self.client.put(
+                f"/workflows/{self.workflow_id}/voice-criteria",
+                json={"preset": preset, "custom_instructions": "", "min_length": 50, "max_length": 300},
+            )
+            self.assertEqual(resp.status_code, 200, f"preset '{preset}' failed")
+            self.assertEqual(resp.json()["preset"], preset)
+
+    def test_custom_preset_stores_instructions(self) -> None:
+        resp = self.client.put(
+            f"/workflows/{self.workflow_id}/voice-criteria",
+            json={"preset": "custom", "custom_instructions": "Write like Hemingway.", "min_length": 50, "max_length": 200},
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["preset"], "custom")
+        self.assertEqual(resp.json()["custom_instructions"], "Write like Hemingway.")
+
+        get = self.client.get(f"/workflows/{self.workflow_id}/voice-criteria")
+        self.assertEqual(get.json()["custom_instructions"], "Write like Hemingway.")
+
+    def test_invalid_preset_returns_422(self) -> None:
+        resp = self.client.put(
+            f"/workflows/{self.workflow_id}/voice-criteria",
+            json={"preset": "unknown_style", "custom_instructions": "", "min_length": 50, "max_length": 200},
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["code"], "invalid_preset")
+
+    def test_min_max_length_constraint(self) -> None:
+        resp = self.client.put(
+            f"/workflows/{self.workflow_id}/voice-criteria",
+            json={"preset": "casual", "custom_instructions": "", "min_length": 300, "max_length": 100},
+        )
+        self.assertEqual(resp.status_code, 422)
+        self.assertEqual(resp.json()["code"], "invalid_length")
+
+    def test_voice_criteria_unknown_workflow_returns_404(self) -> None:
+        resp = self.client.get("/workflows/99999/voice-criteria")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["code"], "workflow_not_found")
+
+
+class ApiGenerationTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.tmpdir = tempfile.TemporaryDirectory()
+        self.db_path = str(Path(self.tmpdir.name) / "auripostao.db")
+        self.original_db_path = api_main.DB_PATH
+        api_main.DB_PATH = self.db_path
+        init_db(self.db_path)
+        self.client = TestClient(app)
+        self.client.put("/channels/dummy", json={"enabled": True})
+        created = self.client.post(
+            "/workflows",
+            json={"name": "WF gen", "description": "", "is_active": True, "channels": ["dummy"]},
+        )
+        self.assertEqual(created.status_code, 201)
+        self.workflow_id = created.json()["id"]
+        sources_dir = Path(self.tmpdir.name) / "sources"
+        sources_dir.mkdir()
+        f = sources_dir / "content.txt"
+        f.write_text("This is the source content for testing.", encoding="utf-8")
+        self.client.put(
+            f"/workflows/{self.workflow_id}/sources",
+            json={"file_paths": [str(f)], "directory_path": None, "recursive": False, "max_file_size_bytes": 1024},
+        )
+
+    def tearDown(self) -> None:
+        api_main.DB_PATH = self.original_db_path
+        self.tmpdir.cleanup()
+
+    @unittest.mock.patch("core.api.main._call_ai_provider")
+    def test_generate_success(self, mock_call: unittest.mock.MagicMock) -> None:
+        mock_call.return_value = ('{"journal": "Private entry.", "post": "Public post."}', None, None)
+        resp = self.client.post(f"/workflows/{self.workflow_id}/generate")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["journal"], "Private entry.")
+        self.assertEqual(body["post"], "Public post.")
+        self.assertIsNone(body["error_type"])
+        self.assertEqual(body["provider"], "ollama")
+        mock_call.assert_called_once()
+
+    @unittest.mock.patch("core.api.main._call_ai_provider")
+    def test_generate_transient_error_returned_in_body(self, mock_call: unittest.mock.MagicMock) -> None:
+        mock_call.return_value = (None, "transient", "Connection refused")
+        resp = self.client.post(f"/workflows/{self.workflow_id}/generate")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsNone(body["journal"])
+        self.assertIsNone(body["post"])
+        self.assertEqual(body["error_type"], "transient")
+        self.assertEqual(body["error_message"], "Connection refused")
+
+    @unittest.mock.patch("core.api.main._call_ai_provider")
+    def test_generate_permanent_error_returned_in_body(self, mock_call: unittest.mock.MagicMock) -> None:
+        mock_call.return_value = (None, "permanent", "Authentication failed (HTTP 401)")
+        resp = self.client.post(f"/workflows/{self.workflow_id}/generate")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertEqual(body["error_type"], "permanent")
+
+    @unittest.mock.patch("core.api.main._call_ai_provider")
+    def test_generate_uses_persisted_ai_config(self, mock_call: unittest.mock.MagicMock) -> None:
+        mock_call.return_value = ('{"journal": "j", "post": "p"}', None, None)
+        self.client.put(
+            f"/workflows/{self.workflow_id}/ai-config",
+            json={"provider": "openai_compat", "base_url": "http://localhost:8080", "model": "mistral", "timeout_seconds": 45},
+        )
+        resp = self.client.post(f"/workflows/{self.workflow_id}/generate")
+        self.assertEqual(resp.status_code, 200)
+        _, kwargs = mock_call.call_args
+        self.assertEqual(kwargs["provider"], "openai_compat")
+        self.assertEqual(kwargs["model"], "mistral")
+        self.assertEqual(kwargs["timeout"], 45)
+
+    @unittest.mock.patch("core.api.main._call_ai_provider")
+    def test_generate_unknown_workflow_returns_404(self, mock_call: unittest.mock.MagicMock) -> None:
+        resp = self.client.post("/workflows/99999/generate")
+        self.assertEqual(resp.status_code, 404)
+        self.assertEqual(resp.json()["code"], "workflow_not_found")
+        mock_call.assert_not_called()
+
+    @unittest.mock.patch("core.api.main._call_ai_provider")
+    def test_generate_uses_persisted_voice_criteria_in_prompt(self, mock_call: unittest.mock.MagicMock) -> None:
+        mock_call.return_value = ('{"journal": "j", "post": "p"}', None, None)
+        self.client.put(
+            f"/workflows/{self.workflow_id}/voice-criteria",
+            json={"preset": "custom", "custom_instructions": "UNIQUE_MARKER_XYZ", "min_length": 50, "max_length": 200},
+        )
+        self.client.post(f"/workflows/{self.workflow_id}/generate")
+        _, kwargs = mock_call.call_args
+        self.assertIn("UNIQUE_MARKER_XYZ", kwargs["prompt"])
+
+
+class OpenAICompatUrlNormalizationTests(unittest.TestCase):
+    """Unit tests for _call_openai_compat URL construction."""
+
+    @unittest.mock.patch("core.api.main.urllib.request.urlopen")
+    def test_base_url_with_v1_suffix_no_double_v1(self, mock_urlopen: unittest.mock.MagicMock) -> None:
+        """base_url already ending with /v1 must NOT produce /v1/v1/chat/completions."""
+        captured: list[str] = []
+
+        class FakeResp:
+            def read(self):
+                return b'{"choices":[{"message":{"content":"ok"}}]}'
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        def fake_open(req, timeout):
+            captured.append(req.full_url)
+            return FakeResp()
+
+        mock_urlopen.side_effect = fake_open
+        api_main._call_openai_compat("http://localhost:8200/v1", "mymodel", "hello", 10)
+        self.assertEqual(captured[0], "http://localhost:8200/v1/chat/completions")
+
+    @unittest.mock.patch("core.api.main.urllib.request.urlopen")
+    def test_base_url_without_v1_suffix_appends_v1(self, mock_urlopen: unittest.mock.MagicMock) -> None:
+        """base_url without /v1 must produce /v1/chat/completions."""
+        captured: list[str] = []
+
+        class FakeResp:
+            def read(self):
+                return b'{"choices":[{"message":{"content":"ok"}}]}'
+            def __enter__(self): return self
+            def __exit__(self, *a): pass
+
+        def fake_open(req, timeout):
+            captured.append(req.full_url)
+            return FakeResp()
+
+        mock_urlopen.side_effect = fake_open
+        api_main._call_openai_compat("http://localhost:8200", "mymodel", "hello", 10)
+        self.assertEqual(captured[0], "http://localhost:8200/v1/chat/completions")
 
 
 if __name__ == "__main__":
