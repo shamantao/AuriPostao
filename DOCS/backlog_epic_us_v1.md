@@ -233,7 +233,7 @@ Scenario test humain EPIC-2:
 5. Verifier apercu et erreurs lisibles.
 
 ## EPIC-3 - Generation IA et criteres de parole
-Statut: Ready
+Statut: ✅ Done
 
 Objectif testable:
 Un workflow genere un Journal prive et un Post public conformes au critere de parole choisi, avec configuration persistee par workflow (provider IA, modele, style, contraintes), depuis l IHM.
