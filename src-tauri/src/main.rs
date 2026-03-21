@@ -244,10 +244,14 @@ struct GenerationResultDto {
     error_message: Option<String>,
     #[serde(default)]
     draft_id: Option<i64>,
+    #[serde(default)]
+    draft_status: Option<String>,
+    #[serde(default)]
+    require_approval: Option<bool>,
 }
 
 // ---------------------------------------------------------------------------
-// US-4.2 — Scheduler DTOs
+// US-4.1 — Modèle planification (Scheduler DTOs)
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -260,6 +264,7 @@ struct ScheduleDto {
     weekdays: Vec<i64>,
     monthdays: Vec<i64>,
     catchup_enabled: bool,
+    require_approval: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -271,6 +276,7 @@ struct ScheduleInput {
     weekdays: Vec<i64>,
     monthdays: Vec<i64>,
     catchup_enabled: bool,
+    require_approval: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize)]

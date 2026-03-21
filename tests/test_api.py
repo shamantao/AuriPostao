@@ -40,7 +40,7 @@ class ApiDatabaseTests(unittest.TestCase):
             db_path = Path(tmpdir) / "auripostao.db"
             version = init_db(str(db_path))
 
-            self.assertEqual(version, 8)
+            self.assertEqual(version, 9)
 
             with sqlite3.connect(db_path) as conn:
                 rows = conn.execute(
@@ -76,7 +76,7 @@ class ApiDatabaseTests(unittest.TestCase):
                     "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
                 ).fetchone()[0]
 
-            self.assertEqual(version, 8)
+            self.assertEqual(version, 9)
 
     def test_workflows_enforces_unique_name_per_local_user(self) -> None:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -645,7 +645,41 @@ class ApiGenerationTests(unittest.TestCase):
         self.assertEqual(body["post"], "Public post.")
         self.assertIsNone(body["error_type"])
         self.assertEqual(body["provider"], "ollama")
+        # require_approval=False par défaut → brouillon auto-approuvé (US-4.1 / PRD §3.3)
+        self.assertEqual(body["draft_status"], "approved")
+        self.assertFalse(body["require_approval"])
         mock_call.assert_called_once()
+
+    @unittest.mock.patch("core.api.main._call_ai_provider")
+    def test_require_approval_false_auto_approves_draft(self, mock_call: unittest.mock.MagicMock) -> None:
+        """Quand require_approval=False, le brouillon est directement approuvé (US-4.1)."""
+        mock_call.return_value = ('{"journal": "j", "post": "p"}', None, None)
+        # S'assure que require_approval=False (valeur par défaut)
+        self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "none", "timezone": "UTC", "require_approval": False},
+        )
+        resp = self.client.post(f"/workflows/{self.workflow_id}/generate")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsNone(body["error_type"])
+        self.assertEqual(body["draft_status"], "approved")
+        self.assertFalse(body["require_approval"])
+
+    @unittest.mock.patch("core.api.main._call_ai_provider")
+    def test_require_approval_true_creates_pending_draft(self, mock_call: unittest.mock.MagicMock) -> None:
+        """Quand require_approval=True, le brouillon est en attente de validation (US-4.1)."""
+        mock_call.return_value = ('{"journal": "j", "post": "p"}', None, None)
+        self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "none", "timezone": "UTC", "require_approval": True},
+        )
+        resp = self.client.post(f"/workflows/{self.workflow_id}/generate")
+        self.assertEqual(resp.status_code, 200)
+        body = resp.json()
+        self.assertIsNone(body["error_type"])
+        self.assertEqual(body["draft_status"], "pending_approval")
+        self.assertTrue(body["require_approval"])
 
     @unittest.mock.patch("core.api.main._call_ai_provider")
     def test_generate_transient_error_returned_in_body(self, mock_call: unittest.mock.MagicMock) -> None:
@@ -772,6 +806,7 @@ class ApiSchedulerTests(unittest.TestCase):
         self.assertEqual(body["weekdays"], [])
         self.assertEqual(body["monthdays"], [])
         self.assertFalse(body["catchup_enabled"])
+        self.assertFalse(body["require_approval"])
 
     def test_set_and_get_daily_schedule(self) -> None:
         put = self.client.put(
@@ -781,6 +816,7 @@ class ApiSchedulerTests(unittest.TestCase):
                 "timezone": "Europe/Paris",
                 "times": ["09:00", "18:00"],
                 "catchup_enabled": True,
+                "require_approval": True,
             },
         )
         self.assertEqual(put.status_code, 200)
@@ -789,10 +825,12 @@ class ApiSchedulerTests(unittest.TestCase):
         self.assertEqual(body["timezone"], "Europe/Paris")
         self.assertEqual(body["times"], ["09:00", "18:00"])
         self.assertTrue(body["catchup_enabled"])
+        self.assertTrue(body["require_approval"])
 
         get = self.client.get(f"/workflows/{self.workflow_id}/schedule")
         self.assertEqual(get.status_code, 200)
         self.assertEqual(get.json()["times"], ["09:00", "18:00"])
+        self.assertTrue(get.json()["require_approval"])
 
     def test_set_weekly_schedule(self) -> None:
         put = self.client.put(
@@ -1232,7 +1270,12 @@ class ApiDraftValidationTests(unittest.TestCase):
         self.assertIn("classified", items[0]["forbidden_words_matched"])
 
     def test_generate_clean_content_creates_pending_draft(self) -> None:
-        """Mocked generation: clean content creates a pending_approval draft."""
+        """Avec require_approval=True, le contenu propre crée un brouillon pending_approval (US-4.1)."""
+        # Activer la validation manuelle obligatoire
+        self.client.put(
+            f"/workflows/{self.workflow_id}/schedule",
+            json={"schedule_type": "none", "timezone": "UTC", "require_approval": True},
+        )
         ai_response = '{"journal": "Clean journal entry", "post": "Clean post"}'
         with unittest.mock.patch.object(api_main, "_call_ai_provider", return_value=(ai_response, None, None)):
             resp = self.client.post(f"/workflows/{self.workflow_id}/generate")

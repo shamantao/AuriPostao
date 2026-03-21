@@ -117,6 +117,7 @@ class ScheduleUpdate(BaseModel):
     weekdays: list[int] = []
     monthdays: list[int] = []
     catchup_enabled: bool = False
+    require_approval: bool = False  # US-4.1 / PRD §3.3 — "Valider avant envoi"
 
 
 class ScheduleRunMark(BaseModel):
@@ -505,7 +506,8 @@ def _parse_hm_pairs(times: list[str]) -> list[tuple[int, int]]:
 def _get_schedule(conn: sqlite3.Connection, workflow_id: int) -> dict[str, Any]:
     row = conn.execute(
         """
-        SELECT schedule_type, timezone, run_at, times_json, weekdays_json, monthdays_json, catchup_enabled
+        SELECT schedule_type, timezone, run_at, times_json, weekdays_json, monthdays_json,
+               catchup_enabled, require_approval
         FROM workflow_schedules WHERE workflow_id = ?
         """,
         (workflow_id,),
@@ -520,6 +522,7 @@ def _get_schedule(conn: sqlite3.Connection, workflow_id: int) -> dict[str, Any]:
             "weekdays": [],
             "monthdays": [],
             "catchup_enabled": False,
+            "require_approval": False,
         }
     try:
         times = json.loads(row["times_json"])
@@ -548,6 +551,7 @@ def _get_schedule(conn: sqlite3.Connection, workflow_id: int) -> dict[str, Any]:
         "weekdays": weekdays,
         "monthdays": monthdays,
         "catchup_enabled": bool(row["catchup_enabled"]),
+        "require_approval": bool(row["require_approval"]),
     }
 
 
@@ -584,8 +588,8 @@ def _set_schedule(
         """
         INSERT INTO workflow_schedules(
             workflow_id, schedule_type, timezone, run_at,
-            times_json, weekdays_json, monthdays_json, catchup_enabled, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            times_json, weekdays_json, monthdays_json, catchup_enabled, require_approval, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(workflow_id)
         DO UPDATE SET
             schedule_type = excluded.schedule_type,
@@ -595,6 +599,7 @@ def _set_schedule(
             weekdays_json = excluded.weekdays_json,
             monthdays_json = excluded.monthdays_json,
             catchup_enabled = excluded.catchup_enabled,
+            require_approval = excluded.require_approval,
             updated_at = excluded.updated_at
         """,
         (
@@ -606,6 +611,7 @@ def _set_schedule(
             json.dumps(payload.weekdays),
             json.dumps(payload.monthdays),
             int(payload.catchup_enabled),
+            int(payload.require_approval),
             now,
         ),
     )
@@ -618,6 +624,7 @@ def _set_schedule(
         "weekdays": payload.weekdays,
         "monthdays": payload.monthdays,
         "catchup_enabled": payload.catchup_enabled,
+        "require_approval": payload.require_approval,
     }
 
 
@@ -1164,6 +1171,20 @@ def init_db(db_path: str) -> int:
             conn.execute(
                 "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
                 (8, _utc_now()),
+            )
+
+        migration_v9_applied = conn.execute(
+            "SELECT 1 FROM schema_migrations WHERE version = 9"
+        ).fetchone()
+
+        if not migration_v9_applied:
+            # Add require_approval column to existing workflow_schedules tables (PRD §3.3 / US-4.1)
+            conn.execute(
+                "ALTER TABLE workflow_schedules ADD COLUMN require_approval INTEGER NOT NULL DEFAULT 0"
+            )
+            conn.execute(
+                "INSERT INTO schema_migrations(version, applied_at) VALUES (?, ?)",
+                (9, _utc_now()),
             )
 
         current_version = conn.execute(
@@ -1811,17 +1832,24 @@ def generate(workflow_id: int) -> dict[str, Any]:
             "draft_id": None,
         }
 
-    # US-4.1: check confidentiality — US-4.3: save draft for human validation
+    # US-4.3: filtrage confidentialité — US-4.4: sauvegarde brouillon + logique require_approval (PRD §6.4)
     with _connect() as conn:
+        schedule = _get_schedule(conn, workflow_id)
+        require_approval = bool(schedule.get("require_approval", False))
         matched = _check_confidentiality(journal or "", post or "", conn, workflow_id)
         if matched:
             final_err_type: str | None = "blocked_confidentiality"
             final_err_msg: str | None = f"blocked: {', '.join(matched)}"
             draft_status = "blocked_confidentiality"
-        else:
+        elif require_approval:
             final_err_type = None
             final_err_msg = None
             draft_status = "pending_approval"
+        else:
+            # "Valider avant envoi" non activé : brouillon auto-approuvé (PRD §3.3)
+            final_err_type = None
+            final_err_msg = None
+            draft_status = "approved"
         draft_id = _save_draft(conn, workflow_id, journal or "", post or "", draft_status, matched)
 
     return {
@@ -1833,6 +1861,8 @@ def generate(workflow_id: int) -> dict[str, Any]:
         "error_type": final_err_type,
         "error_message": final_err_msg,
         "draft_id": draft_id,
+        "draft_status": draft_status,
+        "require_approval": require_approval,
     }
 
 

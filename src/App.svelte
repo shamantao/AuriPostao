@@ -102,6 +102,8 @@
     error_type: string | null;
     error_message: string | null;
     draft_id: number | null;
+    draft_status?: string | null;
+    require_approval?: boolean | null;
   };
 
   type GenerationHistoryEntry = {
@@ -122,6 +124,7 @@
     weekdays: number[];
     monthdays: number[];
     catchup_enabled: boolean;
+    require_approval: boolean;
   };
 
   type DraftStatus = "pending_approval" | "approved" | "rejected" | "abandoned" | "blocked_confidentiality";
@@ -241,6 +244,18 @@ include_failed = true`;
   let planningNextSlots: string[] = [];
   let planningDrafts: DraftDto[] = [];
   let planningAbandonCount: number | null = null;
+
+  // US-4.2 — Configuration planification dans le Studio
+  let scheduleType = "none";
+  let scheduleTimes: string[] = ["08:00"];
+  let scheduleTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  let scheduleCatchup = false;
+  let scheduleRequireApproval = false;
+  let scheduleRunAt = "";
+  let scheduleLoading = false;
+  let scheduleSaved = false;
+  let scheduleError = "";
+
   let draftFilter: "all" | "pending" = "pending";
 
   $: filteredDrafts =
@@ -307,6 +322,14 @@ include_failed = true`;
     generationHistory = [];
     genConfigSaved = false;
     genElapsed = 0;
+    scheduleType = "none";
+    scheduleTimes = ["08:00"];
+    scheduleTimezone = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+    scheduleCatchup = false;
+    scheduleRequireApproval = false;
+    scheduleRunAt = "";
+    scheduleSaved = false;
+    scheduleError = "";
   }
 
   function selectedWorkflowLabel(): string {
@@ -443,6 +466,7 @@ include_failed = true`;
     }
 
     await loadGenerationConfig();
+    await loadScheduleConfig();
   }
 
   async function submitWorkflowDocument() {
@@ -660,6 +684,50 @@ include_failed = true`;
     }
   }
 
+  // US-4.2 — Chargement/sauvegarde de la configuration planification
+  async function loadScheduleConfig() {
+    if (selectedWorkflowId == null) return;
+    try {
+      const sc = await invoke<ScheduleDto>("workflow_schedule_get", { workflowId: selectedWorkflowId });
+      scheduleType = sc.schedule_type;
+      scheduleTimes = sc.times.length > 0 ? [...sc.times] : ["08:00"];
+      scheduleTimezone = sc.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+      scheduleCatchup = sc.catchup_enabled;
+      scheduleRequireApproval = sc.require_approval;
+      scheduleRunAt = sc.run_at ?? "";
+    } catch (_e) {
+      // conserver les valeurs par défaut
+    }
+  }
+
+  async function saveScheduleConfig() {
+    if (selectedWorkflowId == null) return;
+    scheduleLoading = true;
+    scheduleSaved = false;
+    scheduleError = "";
+    try {
+      await invoke("workflow_schedule_set", {
+        workflowId: selectedWorkflowId,
+        payload: {
+          schedule_type: scheduleType,
+          timezone: scheduleTimezone,
+          run_at: scheduleRunAt || null,
+          times: scheduleTimes.filter((t) => t.trim()),
+          weekdays: [],
+          monthdays: [],
+          catchup_enabled: scheduleCatchup,
+          require_approval: scheduleRequireApproval,
+        },
+      });
+      scheduleSaved = true;
+      setTimeout(() => { scheduleSaved = false; }, 3000);
+    } catch (e) {
+      scheduleError = invokeError(e);
+    } finally {
+      scheduleLoading = false;
+    }
+  }
+
   async function saveGenerationConfig() {
     if (selectedWorkflowId == null) return;
     genConfigSaving = true;
@@ -748,7 +816,9 @@ include_failed = true`;
         ].slice(0, 3);
         const draftNote =
           result.draft_id != null
-            ? ` Draft #${result.draft_id} saved — validate it in the Planning tab.`
+            ? result.draft_status === "pending_approval"
+              ? ` Brouillon #${result.draft_id} en attente de validation — voir l'onglet Planning.`
+              : ` Brouillon #${result.draft_id} approuvé automatiquement.`
             : "";
         generationInfo = `Generation complete in ${genElapsed}s.${draftNote}`;
         if (planningWorkflowId === selectedWorkflowId) {
@@ -791,11 +861,11 @@ include_failed = true`;
 
   function statusLabel(status: DraftStatus): string {
     const map: Record<DraftStatus, string> = {
-      pending_approval: "Pending",
-      approved: "Approved",
-      rejected: "Rejected",
-      abandoned: "Abandoned",
-      blocked_confidentiality: "Blocked",
+      pending_approval: "En attente",
+      approved: "Approuvé",
+      rejected: "Refusé",
+      abandoned: "Abandonné",
+      blocked_confidentiality: "Bloqué (confidentialité)",
     };
     return map[status] ?? status;
   }
@@ -813,11 +883,11 @@ include_failed = true`;
 
   function slotScheduleTypeLabel(stype: string): string {
     const map: Record<string, string> = {
-      none: "No schedule",
-      one_shot: "One-shot",
-      daily: "Daily",
-      weekly: "Weekly",
-      monthly: "Monthly",
+      none: "Aucun",
+      one_shot: "Ponctuel",
+      daily: "Quotidien",
+      weekly: "Hebdomadaire",
+      monthly: "Mensuel",
     };
     return map[stype] ?? stype;
   }
@@ -1047,8 +1117,55 @@ include_failed = true`;
               <input type="number" min="1" step="1" bind:value={maxFileSizeBytes} />
             </label>
 
-            <h3>Block 4. Scheduler</h3>
-            <p class="muted">Reserved slot. Scheduler configuration comes in the next user story.</p>
+            <h3>Bloc 4. Planification</h3>
+            {#if isCreatingWorkflow}
+              <p class="muted">Sauvegardez le workflow pour configurer la planification.</p>
+            {:else}
+              <div class="gen-config-grid">
+                <label>
+                  Type de planification
+                  <select bind:value={scheduleType}>
+                    <option value="none">Aucun</option>
+                    <option value="one_shot">Ponctuel</option>
+                    <option value="daily">Quotidien</option>
+                    <option value="weekly">Hebdomadaire</option>
+                    <option value="monthly">Mensuel</option>
+                  </select>
+                </label>
+                {#if scheduleType !== "none" && scheduleType !== "one_shot"}
+                  <label>
+                    Heure du créneau (HH:MM)
+                    <input type="time" bind:value={scheduleTimes[0]} />
+                  </label>
+                {/if}
+                {#if scheduleType === "one_shot"}
+                  <label>
+                    Date et heure
+                    <input type="datetime-local" bind:value={scheduleRunAt} />
+                  </label>
+                {/if}
+                <label>
+                  Fuseau horaire
+                  <input bind:value={scheduleTimezone} placeholder="Europe/Paris" />
+                </label>
+              </div>
+              <label class="checkbox">
+                <input type="checkbox" bind:checked={scheduleRequireApproval} />
+                Valider avant envoi
+              </label>
+              <label class="checkbox">
+                <input type="checkbox" bind:checked={scheduleCatchup} />
+                Rattrapage au démarrage
+              </label>
+              {#if scheduleError}<p class="ko">{scheduleError}</p>{/if}
+              <div class="actions" style="margin-top:0.5rem;">
+                <button type="button" class="secondary" on:click={saveScheduleConfig}
+                  disabled={scheduleLoading}>
+                  {scheduleLoading ? "Sauvegarde..." : "Sauvegarder la planification"}
+                </button>
+                {#if scheduleSaved}<span class="ok" style="font-size:0.88rem; align-self:center;">Planification sauvegardée.</span>{/if}
+              </div>
+            {/if}
 
             <div class="actions">
               <button type="submit">Save workflow document</button>
@@ -1238,7 +1355,7 @@ include_failed = true`;
 
   {#if activeTab === "planning"}
     <section class="card planning-console">
-      <h2>Planning &amp; Moderation</h2>
+      <h2>Planning &amp; Modération</h2>
       <p class="muted">Vue des créneaux planifiés et file de validation des brouillons.</p>
 
       <div class="planning-toolbar">
@@ -1310,7 +1427,7 @@ include_failed = true`;
                 disabled={planningLoading}
                 title="Marque comme abandonnés les brouillons en attente dont le slot suivant est passé"
               >
-                ⏳ Abandon stale
+                ⏳ Abandonner les obsolètes
               </button>
               {#if planningAbandonCount !== null}
                 <span class="ok" style="font-size:0.86rem; align-self:center;">
