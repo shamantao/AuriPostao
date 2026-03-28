@@ -24,8 +24,6 @@ EXCLUDED_DIRS = {
 
 # Files exempted from line count limits (with documented reasons)
 EXEMPTED_FILE_LINE_LIMITS = {
-    'core/api/main.py': 'Business logic aggregator for workflow API (should be refactored into modules)',
-    'src-tauri/src/main.rs': 'Application entry point and Tauri initialization (should be refactored)',
 }
 
 # File patterns to check for path constraints

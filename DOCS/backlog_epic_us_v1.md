@@ -310,12 +310,12 @@ US:
   - Blocs : W4, W6
   - Prerequis : US-4.1
   - Acceptance:
-    1. Une section "Planification" est presente dans l onglet Studio, affichee dans le contexte du workflow courant.
-    2. L utilisateur peut selectionner le type de schedule (Aucun, Ponctuel, Quotidien, Hebdomadaire, Mensuel) et saisir l heure du creneau (HH:MM).
-    3. Un selecteur de fuseau horaire est disponible (valeur par defaut : fuseau local du systeme).
-    4. Une case a cocher "Valider avant envoi" permet d activer la validation humaine pour ce workflow (PRD §3.3).
-    5. Une case a cocher "Rattrapage au demarrage" permet d activer le rattrapage de slots manques (PRD §3.3).
-    6. La configuration est sauvegardee par workflow_id et rechargee fidelement a la reouverture du workflow.
+    1. Une section "Planification" est presente dans l onglet Studio, affichee dans le contexte du workflow courant. ✅
+    2. L utilisateur peut selectionner le type de schedule (Aucun, Ponctuel, Quotidien, Hebdomadaire, Mensuel) et saisir l heure du creneau (HH:MM). ✅
+    3. Un selecteur de fuseau horaire est disponible (valeur par defaut : fuseau local du systeme). 👎
+    4. Une case a cocher "Valider avant envoi" permet d activer la validation humaine pour ce workflow (PRD §3.3). ✅
+    5. Une case a cocher "Rattrapage au demarrage" permet d activer le rattrapage de slots manques (PRD §3.3). ✅ 👎"On ne comprends pas ce que c'est"
+    6. La configuration est sauvegardee par workflow_id et rechargee fidelement a la reouverture du workflow. 👎
 
 - ### US-4.3 (Socle) - Filtrage confidentialite
   - En tant que moteur, je veux bloquer les contenus contenant des mots interdits avant toute publication.
@@ -563,6 +563,86 @@ US:
 4. Filtrer par canal Email : verifier que seules les tentatives email apparaissent.
 5. Cliquer sur un run : verifier le detail etape par etape avec durees et statuts.
 6. Exporter en CSV : ouvrir le fichier et verifier la presence de toutes les colonnes (workflow_id, run_id, etape, duree, statut, erreur, canal).
+
+## EPIC-10 - dette technique 
+
+### ✅ DT-1 — Refactorer main.py (1952 → 11 modules ≤ 400 lignes)
+Bloc workflow : Transverse (tous les blocs)
+Effort : M (2-3 jours)
+Risque si non fait : Chaque ajout de fonctionnalité (publication, nouveaux canaux) aggrave la dette
+
+**Critères d'acceptation** :
+  - main.py réduit à ~50 lignes (entry point + startup hook) ✅
+  - Modules extraits : models.py✅, database.py✅, workflows.py✅, channels.py, sources.py, generation.py✅, voice.py, scheduling.py✅, confidentiality.py✅, drafts.py
+  - Chaque module ≤ 400 lignes ✅
+  - init_db() refactoré (297 → ≤ 200 lignes, migrations séparées)
+  - 92 tests existants passent sans modification ✅
+  - Exemption supprimée dans CODE_CONSTRAINTS.md ✅
+
+  **STATUS** : ✅ DONE 
+
+### ✅ DT-2 — Refactorer main.rs (1200 → modules commands/ ≤ 400 lignes)
+Bloc workflow : Transverse (IHM)
+Effort : M (1-2 jours)
+
+**Critères d'acceptation** :
+
+  - main.rs réduit à ~200 lignes (DTOs + builder Tauri) ✅
+  - commands/ créé avec : bootstrap.rs✅, workflow.rs✅, channels.rs✅, sources.rs✅, ai.rs✅, generation.rs✅, scheduling.rs✅, confidentiality.rs✅, drafts.rs✅
+  - Chaque module ≤ 400 lignes✅
+  - Helper api_get<T> / api_post<T> extrait pour éliminer le boilerplate HTTP
+  - cargo test + npx tauri dev fonctionnels ✅
+  - Exemption supprimée dans CODE_CONSTRAINTS.md ✅
+
+  **STATUS** : ✅ DONE  
+
+### ✅ DT-3 — Refactorer App.svelte (2205 → composants ≤ 400 lignes)
+Bloc workflow : Transverse (IHM)
+Effort : L (3-4 jours)
+
+**Critères d'acceptation** :
+
+  - App.svelte réduit à ~200 lignes (shell, nav, routing tabs) ✅
+  - Composants extraits : WorkflowStudio.svelte ✅, PlanningConsole.svelte ✅, Dashboard.svelte ✅, Settings.svelte ✅
+  - src/lib/types.ts  ✅et src/lib/utils.ts  ✅créés pour les types et helpers partagés
+  - Chaque composant/fichier ≤ 400 lignes ✅
+  - L'IHM fonctionne identiquement (test visuel) ✅
+
+  **STATUS** : ✅ DONE
+
+### 🟡 DT-4 — Refactorer test_api.py (1294 → fichiers par domaine ≤ 400 lignes)
+Bloc workflow : Transverse (qualité)
+Effort : S (1 jour)
+
+Critères d'acceptation :
+
+tests/conftest.py créé avec fixtures partagées
+14 classes de test réparties dans tests/workflows/, tests/generation/, tests/scheduling/, tests/confidentiality/
+Chaque fichier test ≤ 400 lignes
+92 tests passent identiquement
+
+  **STATUS** : Todo
+
+### 🟡 DT-5 — Normaliser la langue des messages (code + UI)
+Bloc workflow : Transverse
+Effort : S (0.5 jour)
+
+Critères d'acceptation :
+
+Règle adoptée : code comments + logs techniques = English ; messages affichés à l'utilisateur = French
+main.rs : messages d'erreur technique en EN, status API en FR
+App.svelte : messages UI end-user cohérents en FR
+Pas de mélange FR/EN dans une même string
+
+### 🟢 DT-6 — Ajouter doc comments sur les commandes Tauri et helpers Svelte
+Bloc workflow : Transverse (maintenabilité)
+Effort : S (0.5 jour)
+
+Critères d'acceptation :
+
+34 #[tauri::command] documentées avec /// (une ligne chacune)
+Module docstring ajouté en haut de main.py
+JSDoc sur les helpers utilitaires Svelte
 
 ## Ordre recommande de livraison
 1. EPIC-0

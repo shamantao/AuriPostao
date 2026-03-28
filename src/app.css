@@ -1,0 +1,131 @@
+/* app.css — Global shared styles for AuriPostao UI */
+
+:root {
+  --bg-card: rgba(18, 25, 37, 0.86);
+  --border: #2b354a;
+  --text-main: #e6ecff;
+  --text-muted: #9fb0cf;
+  --accent: #66d6c4;
+  --accent-2: #4ea1ff;
+  --ok: #2fd08c;
+  --ko: #ff7f8a;
+  --warn: #ffbe66;
+}
+
+body {
+  margin: 0;
+  background: radial-gradient(circle at 20% 0%, #1d2433 0%, #111620 50%, #0c1018 100%);
+  color: var(--text-main);
+}
+
+* { box-sizing: border-box; }
+
+h2 {
+  margin: 0 0 0.55rem;
+  font-size: 0.98rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--accent-2);
+}
+h3 { margin: 0.6rem 0 0.45rem; font-size: 0.94rem; color: #d8e2ff; }
+h4 { margin: 0.6rem 0 0.35rem; font-size: 0.9rem; color: #d8e2ff; }
+
+.muted { color: var(--text-muted); }
+.ok    { color: var(--ok); }
+.ko    { color: var(--ko); }
+.warn  { color: var(--warn); }
+
+input, textarea, button, select { font: inherit; }
+
+input, textarea {
+  background: rgba(10, 14, 22, 0.82);
+  color: var(--text-main);
+  border: 1px solid #33405b;
+  border-radius: 8px;
+  padding: 0.48rem 0.55rem;
+}
+textarea { resize: vertical; min-height: 88px; }
+
+select {
+  background: rgba(10, 14, 22, 0.82);
+  color: var(--text-main);
+  border: 1px solid #33405b;
+  border-radius: 8px;
+  padding: 0.48rem 0.55rem;
+  appearance: auto;
+  cursor: pointer;
+}
+
+button {
+  border: 1px solid #395078;
+  border-radius: 8px;
+  background: linear-gradient(135deg, rgba(78, 161, 255, 0.25), rgba(53, 86, 173, 0.25));
+  color: var(--text-main);
+  padding: 0.44rem 0.82rem;
+  cursor: pointer;
+}
+button:hover { filter: brightness(1.1); }
+button:disabled { opacity: 0.6; cursor: not-allowed; }
+
+.secondary { background: rgba(71, 87, 117, 0.36); border-color: #4b607f; }
+.danger    { background: rgba(172, 67, 87, 0.25); border-color: #96515e; }
+.mini      { padding: 0.25rem 0.55rem; font-size: 0.8rem; }
+
+.card {
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  border-radius: 14px;
+  padding: 1rem;
+  backdrop-filter: blur(4px);
+  min-width: 0;
+}
+.card p, .card li, .card span { overflow-wrap: anywhere; word-break: break-word; }
+
+.actions         { display: flex; gap: 0.45rem; flex-wrap: wrap; align-items: flex-start; }
+.actions.compact { gap: 0.35rem; }
+
+.checkbox { display: flex !important; align-items: center; gap: 0.55rem; }
+
+pre {
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(10, 14, 22, 0.7);
+  border: 1px solid #33405b;
+  color: #c8d7ff;
+  border-radius: 8px;
+  padding: 0.55rem;
+  margin: 0.25rem 0 0;
+}
+
+.preview-dual    { display: grid; grid-template-columns: 1fr 1fr; gap: 0.8rem; margin-top: 0.7rem; }
+.preview-dual-pane pre { max-height: 220px; overflow-y: auto; }
+.preview-dual-sm .preview-dual-pane pre { max-height: 120px; }
+
+.gen-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.55rem;
+  margin-bottom: 0.5rem;
+}
+.gen-config-grid label { display: grid; gap: 0.28rem; font-size: 0.92rem; }
+
+.badge-status {
+  display: inline-block;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+.badge-pending { background: rgba(255,190,102,0.18); color: var(--warn);  border: 1px solid rgba(255,190,102,0.4); }
+.badge-ok      { background: rgba(47,208,140,0.15);  color: var(--ok);    border: 1px solid rgba(47,208,140,0.35); }
+.badge-ko      { background: rgba(255,127,138,0.15); color: var(--ko);    border: 1px solid rgba(255,127,138,0.35); }
+.badge-muted   { background: rgba(159,176,207,0.12); color: var(--text-muted); border: 1px solid rgba(159,176,207,0.25); }
+.badge-blocked { background: rgba(172,67,87,0.22);   color: #ff9faa;      border: 1px solid rgba(172,67,87,0.45); }
+.badge-info    { background: rgba(78,161,255,0.16);  color: var(--accent-2); border: 1px solid rgba(78,161,255,0.35); }
+
+@media (max-width: 980px) {
+  .grid-two   { grid-template-columns: 1fr !important; }
+  .grid-three { grid-template-columns: 1fr !important; }
+}
