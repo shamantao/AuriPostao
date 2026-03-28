@@ -282,154 +282,287 @@ Scenario test humain EPIC-3:
 3. Verifier Journal prive + Post public.
 4. Modifier style et regenerer pour comparer.
 
-## EPIC-4 - Confidentialite, validation humaine et planification
+## EPIC-4 - Planification et controle de workflow
+Statut: 🚧 En cours
+
+Blocs workflow couverts (PRD §2.3) : W4 (Planification — slots + fuseau + rattrapage) + W6 (Regles de controle — confidentialite + validation + retry)
+
 Objectif testable:
-Un workflow planifie peut etre controle par filtres de confidentialite et validation humaine, avec abandon automatique au slot suivant.
+Depuis l IHM, un utilisateur peut configurer la planification et les regles de controle d un workflow (type de schedule, horaire, fuseau, rattrapage, validation avant envoi) directement dans le Studio. Le moteur execute les workflows selon cette planification, detecte les mots interdits, gere les brouillons en attente de validation et les abandonne automatiquement au slot suivant si non valides.
+
+Regles de conformite PRD:
+- Toute configuration de planification est persistee par workflow_id (jamais etat global).
+- La section "Planification" s ouvre dans le contexte du workflow courant dans le Studio.
+- Le scenario de test verifie la persistance apres fermeture/reouverture du workflow.
+- Tous les libelles de l interface sont en francais.
 
 US:
-- US-4.1 (Socle) - Filtrage confidentialite
-  - En tant que moteur, je veux bloquer ou marquer les contenus contenant des mots interdits.
+- ### US-4.1 (Socle) - Modele planification par workflow
+  - En tant que moteur, je veux persister la configuration de planification d un workflow pour programmer les executions.
+  - Bloc : W4
   - Acceptance:
-    1. Liste interdite globale + surcharge workflow.
-    2. Detection avant publication.
-    3. Statut run blocked_confidentiality.
+    1. Tables DB versionnees pour stocker, par workflow_id : le type de schedule (aucun/ponctuel/quotidien/hebdomadaire/mensuel), les creneaux horaires (HH:MM), le fuseau horaire, le flag rattrapage au demarrage, et l activation de la validation humaine avant envoi.
+    2. Endpoints API GET et PUT /workflows/{id}/schedule operationnels, avec validation de schema.
+    3. La suppression d un workflow supprime sa configuration de planification associee.
 
-- US-4.2 (Socle) - Scheduler riche
-  - En tant que moteur, je veux gerer one-shot, quotidien, hebdo, mensuel, multi-creneaux.
+- ### US-4.2 (Interface) - Configuration planification dans le Studio
+  - En tant qu utilisateur, je veux configurer la planification et les regles de controle de mon workflow directement depuis le Studio, dans le contexte du workflow ouvert.
+  - Blocs : W4, W6
+  - Prerequis : US-4.1
   - Acceptance:
-    1. Slots calcules correctement selon fuseau local.
-    2. Rattrapage au redemarrage disponible.
-    3. Aucune execution en doublon sur meme slot.
+    1. Une section "Planification" est presente dans l onglet Studio, affichee dans le contexte du workflow courant.
+    2. L utilisateur peut selectionner le type de schedule (Aucun, Ponctuel, Quotidien, Hebdomadaire, Mensuel) et saisir l heure du creneau (HH:MM).
+    3. Un selecteur de fuseau horaire est disponible (valeur par defaut : fuseau local du systeme).
+    4. Une case a cocher "Valider avant envoi" permet d activer la validation humaine pour ce workflow (PRD §3.3).
+    5. Une case a cocher "Rattrapage au demarrage" permet d activer le rattrapage de slots manques (PRD §3.3).
+    6. La configuration est sauvegardee par workflow_id et rechargee fidelement a la reouverture du workflow.
 
-- US-4.3 (Socle) - Validation humaine et abandon
-  - En tant que moteur, je veux attendre validation et abandonner le brouillon si slot suivant atteint.
+- ### US-4.3 (Socle) - Filtrage confidentialite
+  - En tant que moteur, je veux bloquer les contenus contenant des mots interdits avant toute publication.
+  - Bloc : W6
   - Acceptance:
-    1. Etat pending_approval puis abandoned si timeout par slot suivant.
-    2. Passage automatique au slot suivant.
-    3. Historique des brouillons abandonnes conserve.
+    1. Liste globale de mots interdits configurable via API (GET/PUT /confidentiality/forbidden-words).
+    2. Surcharge par workflow possible : ajout et suppression de mots par rapport a la liste globale (GET/PUT /workflows/{id}/forbidden-words).
+    3. Detection par correspondance mot entier (word-boundary, insensible a la casse) appliquee avant publication.
+    4. Statut du run passe a "bloque_confidentialite" si un mot interdit est detecte ; la liste des mots detectes est conservee dans le brouillon.
 
-- US-4.4 (Interface) - Console planning et moderation
-  - En tant qu utilisateur, je veux voir la file des runs et valider/refuser les brouillons.
+- ### US-4.4 (Socle) - Scheduler d execution et abandon automatique
+  - En tant que moteur, je veux executer les workflows selon leur planification persistee et gerer l etat des brouillons jusqu a leur abandon automatique.
+  - Blocs : W4, W6
+  - Prerequis : US-4.1, US-4.3
   - Acceptance:
-    1. Vue calendrier simplifiee des slots.
-    2. Queue des brouillons en attente avec actions Valider/Refuser.
-    3. Badges statut: pending, abandoned, blocked, ready.
+    1. Les slots sont calcules correctement selon le type de schedule et le fuseau horaire configure (one-shot, daily, weekly, monthly).
+    2. Rattrapage au demarrage operationnel si le flag est active et qu un slot a ete manque.
+    3. Aucune execution en doublon sur un meme slot (idempotence : workflow_id + slot_iso).
+    4. Un brouillon en attente de validation qui n est pas approuve avant l arrivee du slot suivant passe automatiquement au statut "abandonne".
+    5. L historique de tous les brouillons (approuves, refuses, abandonnes, bloques) est conserve en DB.
 
-Scenario test humain EPIC-4:
-1. Configurer un workflow horaire.
-2. Activer validation humaine.
-3. Ne rien valider jusqu au slot suivant.
-4. Verifier que le brouillon precedent passe en abandoned puis que le suivant est traite.
+- ### US-4.5 (Interface) - Console moderation et planning
+  - En tant qu utilisateur, je veux visualiser les prochains creneaux de mon workflow et valider ou refuser les brouillons en attente depuis une interface dediee.
+  - Blocs : W4, W6
+  - Prerequis : US-4.2, US-4.4
+  - Acceptance:
+    1. Un onglet "Planning" est accessible dans l application, affichant les prochains creneaux du workflow selectionne.
+    2. La file de brouillons presente le statut en francais : "En attente", "Approuve", "Refuse", "Abandonne", "Bloque (confidentialite)".
+    3. Les actions "Approuver" et "Refuser" sont disponibles uniquement pour les brouillons au statut "En attente".
+    4. Un bouton "Abandonner les obsoletes" avec indicateur de nombre permet de forcer le passage en "Abandonne" des brouillons dont le slot est depasse.
+    5. La selection d un workflow dans le Studio met automatiquement a jour le contexte de l onglet Planning.
+    6. Tous les libelles, boutons, statuts et messages de l interface sont en francais.
+
+#### Scenario test humain EPIC-4:
+1. Ouvrir un workflow existant dans le Studio.
+2. Dans la section "Planification", selectionner "Quotidien", saisir l heure "08:00", choisir le fuseau local, cocher "Valider avant envoi" et "Rattrapage au demarrage". Sauvegarder.
+3. Fermer puis rouvrir le workflow : verifier que la planification est rechargee fidelement (persistance).
+4. Depuis les parametres de confidentialite, ajouter un mot interdit global.
+5. Lancer une generation manuelle depuis le Studio avec un contenu contenant ce mot interdit.
+6. Ouvrir l onglet Planning et verifier que le brouillon apparait avec le statut "Bloque (confidentialite)".
+7. Lancer une generation sans mot interdit. Verifier que le brouillon apparait avec le statut "En attente".
+8. Approuver le brouillon depuis la console : verifier qu il passe au statut "Approuve".
+9. Generer un nouveau brouillon sans le valider, puis declencher le slot suivant (ou simuler avec abandon manuel) : verifier que le brouillon precedent passe en "Abandonne".
 
 ## EPIC-5 - Publication canal 1: Email
+Statut: 🔲 A venir
+
+Blocs workflow couverts (PRD §2.3) : W5 (Canaux — Email)
+Prerequis : EPIC-4
+
 Objectif testable:
-Depuis l IHM, un workflow publie via SMTP avec statuts et retries visibles.
+Depuis l IHM, un workflow peut publier son contenu valide par email via SMTP. La configuration du compte SMTP est persistee et securisee (jamais de credentials en clair). L envoi respecte la politique de retry et d idempotence du PRD. Les statuts d envoi sont visibles par workflow.
+
+Regles de conformite PRD:
+- Les identifiants SMTP ne sont jamais stockes en clair (§2.2 : keychain OS, fallback SQLite chiffre).
+- La configuration du canal email est associee au workflow (workflow_id, §2.3 W5).
+- Toute tentative d envoi cree un Run ID et un Attempt ID (§6.1).
+- Retry avec backoff exponentiel 30s / 2min / 10min, 3 tentatives max (§6.2).
+- Cle d idempotence : workflow_id + canal + scheduled_slot + hash_contenu (§6.3).
+- Tous les libelles de l interface sont en francais.
 
 US:
-- US-5.1 (Socle) - Connecteur SMTP
+- ### US-5.1 (Socle) - Stockage securise des comptes SMTP
+  - En tant que moteur, je veux persister la configuration SMTP avec secrets proteges pour eviter toute fuite de credentials.
+  - Bloc : W5, §2.2, §9
   - Acceptance:
-    1. Auth SMTP et TLS geres.
-    2. Retry transiente selon politique.
-    3. Statut final par tentative stocke.
+    1. Table DB versionnee pour les comptes SMTP : serveur, port, mode TLS (none/STARTTLS/TLS), identifiant, reference credential (jamais le mot de passe en clair — keychain OS ou SQLite chiffre en fallback).
+    2. Endpoints API GET/POST/PUT/DELETE /smtp-accounts operationnels.
+    3. Le deverrouillage du coffre est demande a la premiere action necessitant un credential, pas au demarrage de l application (§9.1).
+    4. La suppression d un compte SMTP est bloquee s il est associe a un workflow actif.
 
-- US-5.2 (Interface) - Configuration Email + test
+- ### US-5.2 (Socle) - Connecteur SMTP avec retry et idempotence
+  - En tant que moteur, je veux envoyer un email depuis un workflow valide avec fiabilite, retry et deduplication.
+  - Bloc : W5, W6 (retry/idempotence)
+  - Prerequis : US-5.1
   - Acceptance:
-    1. Ecran config serveur/email destinataire.
-    2. Bouton tester connexion et bouton envoyer test.
-    3. Affichage erreurs exploitables.
+    1. Envoi SMTP operationnel avec authentification et TLS selon la configuration du compte.
+    2. Chaque envoi cree un Run ID unique et un Attempt ID par tentative (§6.1).
+    3. Les erreurs sont classees transientes (timeout, rate limit, indisponibilite reseau) ou permanentes (auth invalide, adresse destinataire inconnue) (§6.1).
+    4. Retry automatique sur erreurs transientes uniquement : backoff 30s / 2min / 10min, 3 tentatives max ; au-dela : statut "echec" + action utilisateur requise (§6.2).
+    5. Idempotence : si une publication "succes" existe deja avec la cle workflow_id + canal + scheduled_slot + hash_contenu, le doublon est bloque (§6.3).
+    6. Le statut final de chaque tentative est stocke en DB.
 
-Scenario test humain EPIC-5:
-1. Configurer SMTP.
-2. Envoyer message test.
-3. Verifier reception + statut success dans IHM.
+- ### US-5.3 (Interface) - Configuration compte SMTP et association workflow
+  - En tant qu utilisateur, je veux configurer mon compte SMTP, le tester et l associer a un workflow depuis le Studio.
+  - Bloc : W5
+  - Prerequis : US-5.1
+  - Acceptance:
+    1. Ecran de configuration du compte SMTP : serveur, port, mode TLS, identifiant, mot de passe (stocke dans le coffre, non affiche apres saisie initiale).
+    2. Bouton "Tester la connexion" avec retour immediat : succes ou message d erreur exploitable.
+    3. Dans le contexte d un workflow ouvert dans le Studio, l utilisateur peut associer un compte SMTP et saisir un ou plusieurs emails destinataires (PRD §3.3 : "Envoyer copie par email ? Un ou plusieurs possible").
+    4. La configuration email du workflow (compte associe + destinataires) est sauvegardee par workflow_id et rechargee fidelement a la reouverture du workflow.
+
+- ### US-5.4 (Interface) - Suivi des envois et republication
+  - En tant qu utilisateur, je veux suivre l historique des envois de mon workflow et republier si necessaire.
+  - Bloc : W5
+  - Prerequis : US-5.2, US-5.3
+  - Acceptance:
+    1. Historique des tentatives d envoi visible par workflow : date, destinataires, statut ("Succes" / "Erreur temporaire" / "Echec" / "En cours").
+    2. Le detail de l erreur est affiche en clair pour les echecs permanents.
+    3. Bouton "Republier" disponible pour les runs en echec ; il genere une nouvelle cle d idempotence (republication volontaire, §6.3).
+    4. Tous les libelles, statuts et messages sont en francais.
+
+#### Scenario test humain EPIC-5:
+1. Configurer un compte SMTP valide. Cliquer "Tester la connexion" : verifier le retour succes.
+2. Ouvrir un workflow dans le Studio. Associer le compte SMTP et saisir deux adresses email destinataires. Sauvegarder.
+3. Fermer puis rouvrir le workflow : verifier que les destinataires et le compte SMTP sont recharges fidelement (persistance).
+4. Approuver un brouillon depuis la console Planning. Verifier que l email est envoye et apparait dans l historique avec le statut "Succes".
+5. Simuler une erreur transiente (serveur indisponible) : verifier que le retry est tente et que les Attempt IDs sont incrementes en DB.
+6. Tenter l envoi d un doublon (meme slot, meme contenu) : verifier qu il est bloque par l idempotence.
 
 ## EPIC-6 - Publication canal 2: Telegram
+Statut: 🔲 A venir
+
+Blocs workflow couverts (PRD §2.3) : W5 (Canaux — Telegram)
+Prerequis : EPIC-4
+
 Objectif testable:
-Depuis l IHM, un workflow publie sur Telegram (canal ou groupe) avec suivi de statut.
+Depuis l IHM, un workflow peut publier son contenu valide sur un canal ou groupe Telegram via Bot API. La configuration du bot (token + chat_id) est persistee et securisee. L envoi respecte la politique de retry et d idempotence du PRD. Les statuts de publication sont visibles par workflow.
+
+Regles de conformite PRD:
+- Le token bot Telegram n est jamais stocke en clair (§2.2 : keychain OS, fallback SQLite chiffre).
+- La configuration du canal Telegram est associee au workflow (workflow_id, §2.3 W5).
+- Toute tentative de publication cree un Run ID et un Attempt ID (§6.1).
+- Retry avec backoff exponentiel 30s / 2min / 10min, 3 tentatives max (§6.2).
+- Cle d idempotence : workflow_id + canal + scheduled_slot + hash_contenu (§6.3).
+- Tous les libelles de l interface sont en francais.
 
 US:
-- US-6.1 (Socle) - Connecteur Telegram Bot API
+- ### US-6.1 (Socle) - Stockage securise des comptes Telegram
+  - En tant que moteur, je veux persister la configuration bot Telegram avec secrets proteges.
+  - Bloc : W5, §2.2
   - Acceptance:
-    1. Token bot + chat id valides.
-    2. Retry transiente applique.
-    3. Erreurs permanentes identifiees (auth/chat invalide).
+    1. Table DB versionnee pour les comptes Telegram : nom du bot, token reference (jamais en clair — keychain OS ou SQLite chiffre), chat_id cible.
+    2. Endpoints API GET/POST/PUT/DELETE /telegram-accounts operationnels.
+    3. Le deverrouillage du coffre est demande a la premiere action necessitant un credential, pas au demarrage (§9.1).
+    4. La suppression d un compte Telegram est bloquee s il est associe a un workflow actif.
 
-- US-6.2 (Interface) - Configuration Telegram + test
+- ### US-6.2 (Socle) - Connecteur Telegram Bot API avec retry et idempotence
+  - En tant que moteur, je veux publier un message Telegram depuis un workflow valide avec fiabilite et deduplication.
+  - Bloc : W5, W6 (retry/idempotence)
+  - Prerequis : US-6.1
   - Acceptance:
-    1. Ecran config token/chat id.
-    2. Bouton verifier chat et envoyer message test.
-    3. Journal des envois visible.
+    1. Publication texte operationnelle via Telegram Bot API (sendMessage) vers un canal ou un groupe.
+    2. Chaque publication cree un Run ID unique et un Attempt ID par tentative (§6.1).
+    3. Les erreurs sont classees transientes (timeout, rate limit) ou permanentes (token invalide, chat introuvable, bot non administrateur) (§6.1).
+    4. Retry automatique sur erreurs transientes : backoff 30s / 2min / 10min, 3 tentatives max ; au-dela : statut "echec" (§6.2).
+    5. Idempotence : doublon bloque si une publication "succes" existe deja avec la cle workflow_id + canal + scheduled_slot + hash_contenu (§6.3).
+    6. Le statut final et le message_id Telegram retournes par l API sont stockes en DB.
 
-Scenario test humain EPIC-6:
-1. Configurer bot Telegram.
-2. Envoyer test.
-3. Verifier message dans canal/groupe + statut IHM.
+- ### US-6.3 (Interface) - Configuration compte Telegram et association workflow
+  - En tant qu utilisateur, je veux configurer mon bot Telegram, verifier le canal cible et l associer a un workflow depuis le Studio.
+  - Bloc : W5
+  - Prerequis : US-6.1
+  - Acceptance:
+    1. Ecran de configuration : nom du bot, token (stocke dans le coffre, masque apres saisie), chat_id.
+    2. Bouton "Verifier le canal" : envoie un message de test sur le canal et confirme la reception ou affiche l erreur en clair.
+    3. Dans le contexte d un workflow ouvert dans le Studio, l utilisateur peut associer un compte Telegram au workflow. La configuration est sauvegardee par workflow_id.
+    4. Rechargement fidele de la configuration a la reouverture du workflow (persistance).
+
+- ### US-6.4 (Interface) - Suivi des publications Telegram et republication
+  - En tant qu utilisateur, je veux suivre l historique des publications Telegram de mon workflow et republier si necessaire.
+  - Bloc : W5
+  - Prerequis : US-6.2, US-6.3
+  - Acceptance:
+    1. Historique des tentatives de publication visible par workflow : date, chat_id, statut ("Succes" / "Erreur temporaire" / "Echec"), message_id Telegram si disponible.
+    2. Detail de l erreur affiche pour les echecs permanents.
+    3. Bouton "Republier" disponible pour les runs en echec ; genere une nouvelle cle d idempotence (§6.3).
+    4. Tous les libelles et statuts sont en francais.
+
+#### Scenario test humain EPIC-6:
+1. Configurer un compte bot Telegram (token + chat_id). Cliquer "Verifier le canal" : verifier le message de test recu sur le canal.
+2. Ouvrir un workflow dans le Studio. Associer le compte Telegram. Sauvegarder. Fermer puis rouvrir : verifier la persistance.
+3. Approuver un brouillon depuis la console Planning. Verifier que le message apparait sur le canal Telegram et dans l historique avec statut "Succes" et le message_id.
+4. Simuler une erreur transiente : verifier que le retry est tente avec les Attempt IDs incrementes en DB.
+5. Tenter l envoi d un doublon (meme slot, meme contenu) : verifier qu il est bloque par l idempotence.
 
 ## EPIC-7 - Publication canal 3: Mastodon
+Statut: 🔲 A specifier
+
+Blocs workflow couverts (PRD §2.3) : W5 (Canaux — Mastodon)
+Prerequis : EPIC-9
+
 Objectif testable:
-Depuis l IHM, un workflow publie sur Mastodon avec connectivite instance et statut de publication.
+Depuis l IHM, un workflow peut publier son contenu sur Mastodon via API REST. La configuration du compte (instance + token) est securisee, la publication respecte la politique de retry et d idempotence, et les statuts de publication sont visibles par workflow.
 
-US:
-- US-7.1 (Socle) - Connecteur Mastodon REST API
-  - Acceptance:
-    1. Gestion instance URL + token.
-    2. Publication texte operationnelle.
-    3. Gestion rate-limit et erreurs auth.
-
-- US-7.2 (Interface) - Configuration Mastodon + test
-  - Acceptance:
-    1. Ecran config instance + token.
-    2. Bouton tester instance et publier test.
-    3. Retour id post et statut visible.
-
-Scenario test humain EPIC-7:
-1. Configurer compte Mastodon.
-2. Publier test.
-3. Verifier apparition du post + tracking IHM.
+(US et scenario a specifier lors de la planification de cet EPIC)
 
 ## EPIC-8 - Publication canal 4: Bluesky
+Statut: 🔲 A specifier
+
+Blocs workflow couverts (PRD §2.3) : W5 (Canaux — Bluesky)
+Prerequis : EPIC-9
+
 Objectif testable:
-Depuis l IHM, un workflow publie sur Bluesky avec statut et retry conformes.
+Depuis l IHM, un workflow peut publier son contenu sur Bluesky via AT Protocol. La configuration du compte (identifiants) est securisee, la publication respecte la politique de retry et d idempotence, et les statuts de publication sont visibles par workflow.
 
-US:
-- US-8.1 (Socle) - Connecteur Bluesky AT Protocol
-  - Acceptance:
-    1. Auth compte Bluesky geree.
-    2. Publication texte operationnelle.
-    3. Retry transiente et erreurs permanentes tracees.
-
-- US-8.2 (Interface) - Configuration Bluesky + test
-  - Acceptance:
-    1. Ecran config identifiants.
-    2. Bouton test connexion et publier test.
-    3. Statut et identifiant publication affiches.
-
-Scenario test humain EPIC-8:
-1. Configurer compte Bluesky.
-2. Publier test.
-3. Verifier publication + statut dans l application.
+(US et scenario a specifier lors de la planification de cet EPIC)
 
 ## EPIC-9 - Observabilite, metriques et pilotage
+Statut: 🔲 A venir
+
+Blocs workflow couverts (PRD §2.3) : transverse (W1 a W5)
+Note de pilotage : EPIC-9 est livre apres EPIC-6 et avant EPIC-7/EPIC-8. L observabilite couvre tous les canaux deja livres au moment de son implementation.
+
 Objectif testable:
-L utilisateur peut observer les performances et fiabilite de ses workflows depuis une vue diagnostic locale.
+Depuis l IHM, un utilisateur peut observer les performances et la fiabilite de ses workflows via une vue diagnostic locale : durees de chaque etape du pipeline, taux de succes/echec par canal, compteurs de retries. Toutes les donnees sont stockees localement en SQLite et exportables en CSV. Aucune donnee ne quitte la machine locale.
+
+Regles de conformite PRD:
+- Les metriques sont collectees par run, sans agentification cloud (§7 : local-first, §1 : souverainete).
+- Les donnees sont stockees en SQLite et visualisables dans une vue de diagnostic simple (§7).
+- L instrumentation ne doit pas bloquer le pipeline de publication (collecter sans ralentir).
+- Tous les libelles de l interface sont en francais.
 
 US:
-- US-9.1 (Socle) - Instrumentation runs
+- ### US-9.1 (Socle) - Instrumentation et persistance des metriques de run
+  - En tant que moteur, je veux mesurer et persister les metriques de chaque etape d un run de workflow.
   - Acceptance:
-    1. Durees ingestion/generation/publication mesurees.
-    2. Compteurs retries et taux succes/echec calcules.
-    3. Donnees persistees en SQLite.
+    1. Pour chaque run de workflow, les donnees suivantes sont stockees en DB (PRD §7) :
+       - Duree d ingestion des sources.
+       - Duree de generation IA (prompt -> Journal + Post).
+       - Duree de publication par canal (avec Run ID et Attempt ID existants).
+       - Nombre de retries par canal.
+       - Statut final par canal (succes / echec transiente / echec permanent).
+       - Consommation memoire de l application (hors LLM) relevee sur les ecrans critiques.
+    2. Schema DB versionne pour la table runs_metrics, rattachee a workflow_id et run_id.
+    3. Endpoints API GET /workflows/{id}/metrics et GET /runs/{run_id}/metrics operationnels.
+    4. Une erreur de collecte de metrique est loggee mais ne bloque pas le pipeline.
 
-- US-9.2 (Interface) - Tableau de bord diagnostic
+- ### US-9.2 (Interface) - Tableau de bord diagnostic par workflow
+  - En tant qu utilisateur, je veux visualiser les metriques de mes workflows dans une vue diagnostic locale simple.
+  - Prerequis : US-9.1
   - Acceptance:
-    1. Cartes KPI par workflow.
-    2. Filtres par canal/periode.
-    3. Export CSV local.
+    1. Section ou onglet "Diagnostic" accessible depuis l application.
+    2. Cartes KPI par workflow : nombre de runs sur la periode, taux de succes global, duree moyenne de generation IA, nombre total de retries.
+    3. Filtres disponibles : par canal et par periode (7 jours / 30 jours / tout).
+    4. Detail par run au clic : liste des etapes avec durees, statuts et messages d erreur.
+    5. Bouton "Exporter en CSV" : genere un fichier local avec toutes les metriques du workflow sur la periode selectionnee.
+    6. Tous les libelles, filtres, statuts et actions sont en francais.
 
-Scenario test humain EPIC-9:
-1. Executer plusieurs runs.
-2. Ouvrir diagnostic.
-3. Verifier coherence KPI et export.
+#### Scenario test humain EPIC-9:
+1. Executer au moins trois runs sur un workflow configure avec canal Email et canal Telegram (succes et echecs intentionnels).
+2. Ouvrir la section "Diagnostic". Verifier que les metriques de chaque run sont presentes et coherentes (durees, statuts, retries).
+3. Appliquer le filtre "7 jours" : verifier que les runs plus anciens sont exclus.
+4. Filtrer par canal Email : verifier que seules les tentatives email apparaissent.
+5. Cliquer sur un run : verifier le detail etape par etape avec durees et statuts.
+6. Exporter en CSV : ouvrir le fichier et verifier la presence de toutes les colonnes (workflow_id, run_id, etape, duree, statut, erreur, canal).
 
 ## Ordre recommande de livraison
 1. EPIC-0
@@ -439,9 +572,9 @@ Scenario test humain EPIC-9:
 5. EPIC-4
 6. EPIC-5 (Email)
 7. EPIC-6 (Telegram)
-8. EPIC-7 (Mastodon)
-9. EPIC-8 (Bluesky)
-10. EPIC-9
+8. EPIC-9 (Observabilite — avant les canaux restants)
+9. EPIC-7 (Mastodon)
+10. EPIC-8 (Bluesky)
 
 ## Definition of Done globale V1
 - Chaque EPIC est demoable en IHM par un humain non developpeur.

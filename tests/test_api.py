@@ -2,6 +2,7 @@ import unittest
 import unittest.mock
 import sqlite3
 import tempfile
+from contextlib import closing
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -42,7 +43,7 @@ class ApiDatabaseTests(unittest.TestCase):
 
             self.assertEqual(version, 9)
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 rows = conn.execute(
                     "SELECT name FROM sqlite_master WHERE type='table'"
                 ).fetchall()
@@ -71,7 +72,7 @@ class ApiDatabaseTests(unittest.TestCase):
             db_path = Path(tmpdir) / "auripostao.db"
             init_db(str(db_path))
 
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 version = conn.execute(
                     "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
                 ).fetchone()[0]
@@ -84,7 +85,7 @@ class ApiDatabaseTests(unittest.TestCase):
             init_db(str(db_path))
 
             now = "2026-03-19T00:00:00+00:00"
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.execute(
                     """
                     INSERT INTO workflows(local_user, name, description, is_active, created_at, updated_at)
@@ -1123,7 +1124,7 @@ class ApiConfidentialityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "test.db")
             init_db(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 api_main._set_global_forbidden_words(conn, ["password"])
                 result = api_main._check_confidentiality(
@@ -1135,7 +1136,7 @@ class ApiConfidentialityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "test.db")
             init_db(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 result = api_main._check_confidentiality("clean journal", "clean post", conn, 1)
         self.assertEqual(result, [])
@@ -1144,7 +1145,7 @@ class ApiConfidentialityTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             db_path = str(Path(tmpdir) / "test.db")
             init_db(db_path)
-            with sqlite3.connect(db_path) as conn:
+            with closing(sqlite3.connect(db_path)) as conn:
                 conn.row_factory = sqlite3.Row
                 # Insert workflow first
                 now = "2026-01-01T00:00:00+00:00"
@@ -1196,11 +1197,12 @@ class ApiDraftValidationTests(unittest.TestCase):
         post: str = "my post",
     ) -> int:
         """Helper — inserts a draft directly in the DB and returns its id."""
-        with sqlite3.connect(self.db_path) as conn:
+        with closing(sqlite3.connect(self.db_path)) as conn:
             conn.row_factory = sqlite3.Row
             draft_id = api_main._save_draft(
                 conn, self.workflow_id, journal, post, status, [], slot_iso
             )
+            conn.commit()
         return draft_id
 
     def test_drafts_list_starts_empty(self) -> None:

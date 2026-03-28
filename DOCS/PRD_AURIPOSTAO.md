@@ -8,11 +8,12 @@
 ---
 
 ## 1. Vision du Produit
-AuriPostao est une application légère, auto-hébergée et sous licence AGPL, conçue pour générer et programmer/publier automatiquement un contenu court sur les réseaux sociaux décentralisés et/ou par email, à partir de sources personnelles, en utilisant exclusivement un modèle de langage local (LLM) via MCP Server, openai-compatible ou Ollama.
+AuriPostao est une application légère, auto-hébergée et sous licence AGPL, conçue pour générer et programmer/publier automatiquement un contenu court sur des réseaux sociaux décentralisés et/ou par email, à partir de sources personnelles, en utilisant exclusivement un modèle de langage local (LLM) via MCP Server, openai-compatible ou Ollama.
+On lui donne une ou plusieurs sources en entrée, il est capable de livrer un post court à destination des RS ou d'une messagerie instantanée en plusieurs langage (fr, en, zh-TW) soit avec une validation humaine soit automatiquement avec planification.
 
 **Valeurs clés :**
 - **Souveraineté :** 100% local, aucune donnée ne transite par un cloud tiers.
-- **Éthique :** Licence AGPL pour garantir que les améliorations restent libres.
+- **Éthique :** Licence AGPL pour les dev ajoutés afin garantir que les améliorations restent libres.
 - **Sobriété :** Optimisé pour l'IA locale, économisant 90% de CO2 vs les API cloud.
 
 ---
@@ -221,6 +222,35 @@ Modèles de critère de parole V1 :
     - exécution CI GitHub (PR/push),
     - blocage de tag/release si pipeline en échec.
 
+### 8.1 — Contraintes de code et garde-fous d'architecture
+Pour V1, certaines règles d'architecture doivent être validées automatiquement et considérées comme des garde-fous produit, pas comme de simples conventions de style.
+
+Contraintes à faire respecter par les tests et par les futures EPIC :
+- **Logger unifié obligatoire** : pas de `print()` en Python ni de `println!`/`eprintln!` en Rust dans le code métier, hors cas explicitement tolérés de bootstrap applicatif.
+- **Path manager obligatoire** : pas de chemins absolus hard codés dans le code métier ; la résolution de chemins doit passer par le gestionnaire centralisé côté Rust et par des chemins projet/configurables côté Python.
+- **Taille de fichier maîtrisée** : objectif de fichiers source ≤ 400 lignes quand c'est raisonnablement possible ; les exceptions doivent être temporaires, assumées et planifiées pour refactorisation.
+- **Portabilité locale-first** : aucun comportement critique ne doit dépendre d'un ancien chemin de poste, d'un répertoire utilisateur spécifique ou d'un cache build historique.
+
+Décision produit/ingénierie :
+- Ces contraintes ne remplacent pas les tests métier ; elles complètent la qualité fonctionnelle par une vérification d'hygiène architecturale.
+- Toute nouvelle EPIC qui introduit une exception durable à ces règles doit documenter la dette et son plan de résorption dans le backlog.
+- Les gros fichiers actuels du MVP doivent être traités comme dette technique connue, non comme nouveau standard de projet.
+
+Référence détaillée : [DOCS/CODE_CONSTRAINTS.md](DOCS/CODE_CONSTRAINTS.md).
+
+### 8.2 — Référence de stratégie de test
+La stratégie de test détaillée est décrite dans [DOCS/TEST_STRATEGY.md](DOCS/TEST_STRATEGY.md). Ce document précise notamment :
+- la différence entre tests unitaires, intégration légère et test de démarrage complet Tauri,
+- le rôle du cache Cargo isolé pour les tests,
+- pourquoi un build applicatif réel peut échouer même si les tests unitaires passent,
+- dans quels cas lancer un test de démarrage complet avant merge ou release.
+
+Résumé opérationnel à retenir dans le PRD :
+- Les tests rapides doivent couvrir les contraintes d'architecture + les tests unitaires Python/Rust.
+- Les tests d'intégration légère doivent valider l'API locale et les scénarios critiques du MVP.
+- Un test de démarrage Tauri complet doit exister comme garde de non-régression pour détecter les erreurs de build réelles et les problèmes de cache/chemins.
+- En cas d'arbitrage de temps, on peut rendre le test de démarrage complet optionnel en local, mais il doit être prévu dans la gate CI de release.
+
 ---
 
 ## 9. Politique de Récupération des Secrets (MVP)
@@ -243,3 +273,9 @@ Modèles de critère de parole V1 :
 - Publication sur Facebook/Instagram/LinkedIn (APIs restrictives).
 - Hébergement cloud (L'app est strictement "Local-First").
 - Génération d'images ou de vidéos.
+
+---
+
+## 11. Notes d'environnement de développement
+
+**Cache Cargo (src-tauri/target) :** Le dossier `src-tauri/target/` est un symlink pointant vers `~/.cache/auripostao-cargo-target/`. Ce cache Cargo (3-6 Go) est volumineux et reconstituable — il ne doit jamais être synchronisé par kDrive. Si le symlink est perdu (nouveau poste, clone Git), recréer avec : `mv src-tauri/target ~/.cache/auripostao-cargo-target && ln -s ~/.cache/auripostao-cargo-target src-tauri/target`.

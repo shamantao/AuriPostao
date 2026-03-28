@@ -7,7 +7,7 @@ import sqlite3
 import time
 import urllib.error
 import urllib.request
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Generator
@@ -903,7 +903,7 @@ def init_db(db_path: str) -> int:
     db_file = Path(db_path)
     db_file.parent.mkdir(parents=True, exist_ok=True)
 
-    with sqlite3.connect(db_file) as conn:
+    with closing(sqlite3.connect(db_file)) as conn:
         conn.execute("PRAGMA foreign_keys = ON")
         conn.execute(
             """
@@ -1190,6 +1190,7 @@ def init_db(db_path: str) -> int:
         current_version = conn.execute(
             "SELECT COALESCE(MAX(version), 0) FROM schema_migrations"
         ).fetchone()[0]
+        conn.commit()
 
     return int(current_version)
 
