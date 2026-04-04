@@ -31,11 +31,11 @@
     ingestionPreview = null;
 
     if (isCreatingWorkflow || selectedWorkflowId == null) {
-      ingestionError = "Save the workflow first before testing ingestion.";
+      ingestionError = "Sauvegardez d'abord le workflow avant de tester l'ingestion.";
       return;
     }
     if (sourceFiles.length === 0 && !sourceDirectory) {
-      ingestionError = "No source selected in this workflow.";
+      ingestionError = "Aucune source configurée dans ce workflow.";
       return;
     }
 
@@ -56,11 +56,11 @@
 
       const tooLargeFiles = ingestionPreview.ignored_files.filter((x) => x.reason === "file_too_large");
       if (tooLargeFiles.length > 0)
-        ingestionWarning = `${tooLargeFiles.length} file(s) exceed the size threshold (${formatBytes(maxFileSizeBytes)} max per file).`;
+        ingestionWarning = `${tooLargeFiles.length} fichier(s) dépassent la taille limite (${formatBytes(maxFileSizeBytes)} max par fichier).`;
       if (ingestionPreview.summary.accepted === 0)
-        ingestionError = "No valid source detected. Add at least one readable text file (.txt/.md) under the size threshold.";
+        ingestionError += "\nAucune source valide détectée. Ajoutez au moins un fichier texte lisible (.txt/.md) sous la taille limite.";
       else
-        ingestionInfo = "Ingestion preview generated for this workflow.";
+        ingestionInfo = "Aperçu d'ingestion généré pour ce workflow.";
     } catch (e) {
       ingestionError = invokeError(e);
     } finally {
@@ -70,10 +70,10 @@
 </script>
 
 <div class="preview-box">
-  <h3>Block 5. Pre-run validation</h3>
+  <h3>Bloc 5. Validation pré-exécution</h3>
   <div class="actions">
     <button type="button" on:click={runIngestionPreview} disabled={ingestionLoading}>
-      {#if ingestionLoading}Ingesting...{:else}Test ingestion{/if}
+      {#if ingestionLoading}Ingestion en cours...{:else}Tester l'ingestion{/if}
     </button>
   </div>
 
@@ -83,12 +83,12 @@
 
   {#if ingestionPreview}
     <p>
-      Summary: {ingestionPreview.summary.accepted} accepted, {ingestionPreview.summary.ignored} ignored,
-      {ingestionPreview.summary.errors} error(s), {ingestionPreview.summary.total_candidates} candidate(s),
-      total size {formatBytes(ingestionPreview.summary.total_size_bytes)}
+      Résumé : {ingestionPreview.summary.accepted} accepté(s), {ingestionPreview.summary.ignored} ignoré(s),
+      {ingestionPreview.summary.errors} erreur(s), {ingestionPreview.summary.total_candidates} candidat(s),
+      taille totale {formatBytes(ingestionPreview.summary.total_size_bytes)}
     </p>
     {#if ingestionPreview.accepted_files.length > 0}
-      <h4>Content samples</h4>
+      <h4>Échantillons de contenu</h4>
       <ul class="source-list">
         {#each ingestionPreview.accepted_files.slice(0, 5) as file}
           <li>
@@ -99,13 +99,13 @@
       </ul>
     {/if}
     {#if ingestionPreview.ignored_files.length > 0}
-      <h4>Ignored files</h4>
+      <h4>Fichiers ignorés</h4>
       <ul class="source-list">
         {#each ingestionPreview.ignored_files as item}<li>{item.path} - {item.reason}</li>{/each}
       </ul>
     {/if}
     {#if ingestionPreview.errors.length > 0}
-      <h4>Errors</h4>
+      <h4>Erreurs</h4>
       <ul class="source-list">
         {#each ingestionPreview.errors as item}<li>{item.path} - {item.reason}</li>{/each}
       </ul>

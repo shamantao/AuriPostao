@@ -61,7 +61,7 @@
     isCreatingWorkflow = true;
     selectedWorkflowId = null;
     resetDocumentState();
-    workflowsInfo = "New workflow document initialized.";
+    workflowsInfo = "Nouveau document de workflow initialisé.";
   }
 
   async function openWorkflowDocument(workflow: Workflow) {
@@ -78,7 +78,7 @@
       sourceDirectory = cfg.directory_path ?? "";
       includeSubdirs = cfg.recursive;
       maxFileSizeBytes = cfg.max_file_size_bytes;
-      sourcesInfo = "Workflow document loaded.";
+      sourcesInfo = "Document de workflow chargé.";
     } catch (e) {
       sourcesError = invokeError(e);
       sourceFiles = []; sourceDirectory = ""; includeSubdirs = true; maxFileSizeBytes = 1_000_000;
@@ -89,10 +89,10 @@
 
   async function submitWorkflowDocument() {
     workflowsError = ""; workflowsInfo = "";
-    if (!form.name.trim()) { workflowsError = "validation_error: name is required"; return; }
-    if (form.channels.length === 0) { workflowsError = "validation_error: select at least one channel"; return; }
+    if (!form.name.trim()) { workflowsError = "Erreur : le titre est obligatoire."; return; }
+    if (form.channels.length === 0) { workflowsError = "Erreur : sélectionnez au moins un canal."; return; }
     if (isCreatingWorkflow && !channelStatus?.has_valid_channel) {
-      workflowsError = "no_valid_channel: configure at least one valid channel before creating a workflow"; return;
+      workflowsError = "Aucun canal valide : configurez un canal avant de créer un workflow."; return;
     }
     try {
       let workflowId = selectedWorkflowId;
@@ -109,13 +109,13 @@
           payload: { name: form.name, description: form.description, is_active: form.is_active },
         });
         await invoke<string[]>("workflow_channels_set", { workflowId: selectedWorkflowId, channels: form.channels });
-      } else { workflowsError = "Select a workflow or create a new document."; return; }
+      } else { workflowsError = "Sélectionnez un workflow ou créez un nouveau document."; return; }
 
       await invoke<WorkflowSourcesConfig>("workflow_sources_set", {
         workflowId,
         payload: { file_paths: sourceFiles, directory_path: sourceDirectory || null, recursive: includeSubdirs, max_file_size_bytes: maxFileSizeBytes },
       });
-      workflowsInfo = "Workflow document saved.";
+      workflowsInfo = "Document de workflow sauvegardé.";
       workflows = await invoke<Workflow[]>("workflows_list");
       const target = workflows.find((w) => w.id === workflowId);
       if (target) await openWorkflowDocument(target);
@@ -126,7 +126,7 @@
     workflowsError = ""; workflowsInfo = "";
     try {
       await invoke<boolean>("workflows_delete", { workflowId: w.id });
-      workflowsInfo = "Workflow deleted.";
+      workflowsInfo = "Workflow supprimé.";
       pendingDeleteId = null;
       if (selectedWorkflowId === w.id) { selectedWorkflowId = null; isCreatingWorkflow = false; resetDocumentState(); }
       workflows = await invoke<Workflow[]>("workflows_list");
@@ -137,9 +137,9 @@
     sourcesError = "";
     try {
       const picked = await invoke<string[]>("pick_text_files");
-      if (picked.length === 0) { sourcesInfo = "No file selected."; return; }
+      if (picked.length === 0) { sourcesInfo = "Aucun fichier sélectionné."; return; }
       sourceFiles = dedupePaths([...sourceFiles, ...picked]);
-      sourcesInfo = `${sourceFiles.length} file(s) in this document.`;
+      sourcesInfo = `${sourceFiles.length} fichier(s) dans ce document.`;
     } catch (e) { sourcesError = invokeError(e); }
   }
 
@@ -148,13 +148,13 @@
     try {
       const picked = await invoke<string | null>("pick_directory");
       sourceDirectory = picked ?? "";
-      if (sourceDirectory) sourcesInfo = "Directory selected for this document.";
+      if (sourceDirectory) sourcesInfo = "Dossier sélectionné pour ce document.";
     } catch (e) { sourcesError = invokeError(e); }
   }
 
   function removeSourceFile(path: string) {
     sourceFiles = sourceFiles.filter((p) => p !== path);
-    sourcesInfo = sourceFiles.length > 0 ? `${sourceFiles.length} file(s) in this document.` : "No file.";
+    sourcesInfo = sourceFiles.length > 0 ? `${sourceFiles.length} fichier(s) dans ce document.` : "Aucun fichier.";
   }
 
   function clearSourceDirectory() { sourceDirectory = ""; }
@@ -162,7 +162,7 @@
   function clearAllSources() {
     sourceFiles = []; sourceDirectory = "";
     ingestionRef?.reset();
-    sourcesInfo = "Document sources reset.";
+    sourcesInfo = "Sources du document réinitialisées.";
   }
 
   async function loadScheduleConfig() {
@@ -199,32 +199,32 @@
 
 <section class="grid-two">
   <article class="card">
-    <h2>Workflow Explorer</h2>
-    <p class="muted">Choose an existing workflow or create a new complete document.</p>
+    <h2>Explorateur de workflows</h2>
+    <p class="muted">Choisissez un workflow existant ou créez un nouveau document complet.</p>
     <div class="actions">
-      <button type="button" on:click={beginCreateWorkflow} disabled={!channelStatus?.has_valid_channel}>New workflow</button>
+      <button type="button" on:click={beginCreateWorkflow} disabled={!channelStatus?.has_valid_channel}>Nouveau workflow</button>
     </div>
     {#if !channelStatus?.has_valid_channel}
-      <p class="warn">No valid channel configured. Enable one in Settings.</p>
+      <p class="warn">Aucun canal valide configuré. Activez-en un dans Paramètres.</p>
     {/if}
     {#if workflows.length === 0}
-      <p>No workflow available.</p>
+      <p>Aucun workflow disponible.</p>
     {:else}
       <ul class="workflow-list">
         {#each workflows as w}
           <li class:selected={selectedWorkflowId === w.id && !isCreatingWorkflow}>
             <div>
               <p class="wf-name">{w.name}</p>
-              <p class="muted">{w.description || "No description"}</p>
-              <p class="wf-meta">Channels: {w.channels?.length ? w.channels.join(", ") : "none"}</p>
+              <p class="muted">{w.description || "Sans description"}</p>
+              <p class="wf-meta">Canaux : {w.channels?.length ? w.channels.join(", ") : "aucun"}</p>
             </div>
             <div class="actions compact">
-              <button type="button" class="secondary" on:click={() => openWorkflowDocument(w)}>Open</button>
+              <button type="button" class="secondary" on:click={() => openWorkflowDocument(w)}>Ouvrir</button>
               {#if pendingDeleteId === w.id}
-                <button type="button" class="danger" on:click={() => removeWorkflow(w)}>Confirm</button>
-                <button type="button" class="secondary" on:click={() => (pendingDeleteId = null)}>Cancel</button>
+                <button type="button" class="danger" on:click={() => removeWorkflow(w)}>Confirmer</button>
+                <button type="button" class="secondary" on:click={() => (pendingDeleteId = null)}>Annuler</button>
               {:else}
-                <button type="button" class="danger" on:click={() => (pendingDeleteId = w.id)}>Delete</button>
+                <button type="button" class="danger" on:click={() => (pendingDeleteId = w.id)}>Supprimer</button>
               {/if}
             </div>
           </li>
@@ -234,20 +234,20 @@
   </article>
 
   <article class="card">
-    <h2>Workflow Document</h2>
-    <p class="muted">Context: {selectedWorkflowLabel()}</p>
+    <h2>Document de workflow</h2>
+    <p class="muted">Contexte : {selectedWorkflowLabel()}</p>
 
     {#if workflowsError}<p class="ko">{workflowsError}</p>{/if}
     {#if workflowsInfo}<p class="ok">{workflowsInfo}</p>{/if}
 
     {#if !(isCreatingWorkflow || selectedWorkflowId != null)}
-      <p class="warn">Select a workflow to activate document blocks.</p>
+      <p class="warn">Sélectionnez un workflow pour activer les blocs du document.</p>
     {:else}
       <form class="workflow-form" on:submit|preventDefault={submitWorkflowDocument}>
-        <h3>Block 1. Metadata</h3>
+        <h3>Bloc 1. Métadonnées</h3>
         <label>
-          Title
-          <input bind:value={form.name} placeholder="Workflow title" maxlength="120" required />
+          Titre
+          <input bind:value={form.name} placeholder="Titre du workflow" maxlength="120" required />
         </label>
         <label>
           Description
@@ -255,10 +255,10 @@
         </label>
         <label class="checkbox">
           <input type="checkbox" bind:checked={form.is_active} />
-          Active workflow
+          Workflow actif
         </label>
 
-        <h3>Block 2. Channels</h3>
+        <h3>Bloc 2. Canaux</h3>
         {#if channelStatus?.valid_channels?.length}
           <div class="channel-checkboxes">
             {#each channelStatus.valid_channels as ch}
@@ -266,37 +266,37 @@
             {/each}
           </div>
         {:else}
-          <p class="warn">No valid channel available.</p>
+          <p class="warn">Aucun canal valide disponible.</p>
         {/if}
 
-        <h3>Block 3. Sources</h3>
+        <h3>Bloc 3. Sources</h3>
         <div class="actions">
-          <button type="button" on:click={pickFiles}>Add text files</button>
-          <button type="button" class="secondary" on:click={pickDirectory}>Pick directory</button>
-          <button type="button" class="secondary" on:click={clearAllSources}>Reset</button>
+          <button type="button" on:click={pickFiles}>Ajouter des fichiers texte</button>
+          <button type="button" class="secondary" on:click={pickDirectory}>Choisir un dossier</button>
+          <button type="button" class="secondary" on:click={clearAllSources}>Réinitialiser</button>
         </div>
         {#if sourcesError}<p class="ko">{sourcesError}</p>{/if}
         {#if sourcesInfo}<p class="ok">{sourcesInfo}</p>{/if}
-        <p>Selected files: {sourceFiles.length}</p>
+        <p>Fichiers sélectionnés : {sourceFiles.length}</p>
         {#if sourceFiles.length > 0}
           <ul class="source-list">
             {#each sourceFiles as filePath}
               <li class="source-row">
                 <span>{filePath}</span>
-                <button type="button" class="secondary mini" on:click={() => removeSourceFile(filePath)}>Remove</button>
+                <button type="button" class="secondary mini" on:click={() => removeSourceFile(filePath)}>Retirer</button>
               </li>
             {/each}
           </ul>
         {/if}
-        <p>Directory: {sourceDirectory || "none"}</p>
+        <p>Dossier : {sourceDirectory || "aucun"}</p>
         {#if sourceDirectory}
-          <button type="button" class="secondary mini" on:click={clearSourceDirectory}>Remove directory</button>
+          <button type="button" class="secondary mini" on:click={clearSourceDirectory}>Retirer le dossier</button>
         {/if}
         <label class="checkbox">
-          <input type="checkbox" bind:checked={includeSubdirs} /> Include subdirectories
+          <input type="checkbox" bind:checked={includeSubdirs} /> Inclure les sous-dossiers
         </label>
         <label>
-          Max size per file (bytes)
+          Taille max par fichier (octets)
           <input type="number" min="1" step="1" bind:value={maxFileSizeBytes} />
         </label>
 
@@ -335,9 +335,9 @@
         {/if}
 
         <div class="actions">
-          <button type="submit">Save workflow document</button>
+          <button type="submit">Sauvegarder le document de workflow</button>
           {#if isCreatingWorkflow}
-            <button type="button" class="secondary" on:click={resetDocumentState}>Clear draft</button>
+            <button type="button" class="secondary" on:click={resetDocumentState}>Effacer le brouillon</button>
           {/if}
         </div>
       </form>

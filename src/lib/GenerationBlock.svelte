@@ -96,12 +96,12 @@
             ? ` Brouillon #${result.draft_id} en attente de validation — voir l'onglet Planning.`
             : ` Brouillon #${result.draft_id} approuvé automatiquement.`
           : "";
-        generationInfo = `Generation complete in ${genElapsed}s.${draftNote}`;
+        generationInfo = `Génération terminée en ${genElapsed}s.${draftNote}`;
       } else if (result.error_type === "blocked_confidentiality") {
         const words = result.error_message?.replace("blocked: ", "") ?? "";
-        generationError = `Content blocked — forbidden words: ${words}.${
-          result.draft_id != null ? ` Draft #${result.draft_id} saved as blocked.` : ""
-        } See Planning tab.`;
+        generationError = `Contenu bloqué — mots interdits : ${words}.${
+          result.draft_id != null ? ` Brouillon #${result.draft_id} sauvegardé comme bloqué.` : ""
+        } Voir l'onglet Planning.`;
       } else {
         generationError = formatGenerationError(result.error_type, result.error_message, aiModel, aiBaseUrl, aiTimeout);
       }
@@ -117,15 +117,15 @@
 </script>
 
 <div class="preview-box generation-block">
-  <h3>Block 6. Generation</h3>
+  <h3>Bloc 6. Génération</h3>
 
   {#if isCreatingWorkflow}
-    <p class="warn">Save the workflow first to enable generation.</p>
+    <p class="warn">Sauvegardez d'abord le workflow pour activer la génération.</p>
   {:else}
-    <h4>AI Provider</h4>
+    <h4>Fournisseur IA</h4>
     <div class="gen-config-grid">
       <label>
-        Provider
+        Fournisseur
         <select bind:value={aiProvider} on:change={onProviderChange}>
           <option value="ollama">Ollama (local)</option>
           <option value="openai_compat">OpenAI-compatible</option>
@@ -146,10 +146,10 @@
       </label>
     </div>
 
-    <h4>Voice Criteria</h4>
+    <h4>Critères de voix</h4>
     <div class="gen-config-grid">
       <label>
-        Style preset
+        Style prédéfini
         <select bind:value={voicePreset}>
           <option value="professional_concise">Professional — Concise</option>
           <option value="professional_detailed">Professional — Detailed</option>
@@ -160,45 +160,45 @@
         </select>
       </label>
       <label>
-        Min length (words)
+        Longueur min (mots)
         <input type="number" min="1" step="10" bind:value={voiceMinLength} />
       </label>
       <label>
-        Max length (words)
+        Longueur max (mots)
         <input type="number" min="2" step="10" bind:value={voiceMaxLength} />
       </label>
     </div>
 
     {#if voicePreset === "custom"}
       <label style="display:grid; gap:0.28rem; margin-top:0.4rem; font-size:0.92rem;">
-        Custom instructions
-        <textarea bind:value={voiceCustomInstructions} rows="3" placeholder="Write in a conversational tone..." />
+        Instructions personnalisées
+        <textarea bind:value={voiceCustomInstructions} rows="3" placeholder="Écrivez sur un ton conversationnel..." />
       </label>
     {/if}
 
     <div class="actions" style="margin-top:0.6rem;">
       <button type="button" class="secondary" on:click={saveGenerationConfig} disabled={genConfigSaving}>
-        {genConfigSaving ? "Saving..." : "Save config"}
+        {genConfigSaving ? "Enregistrement..." : "Enregistrer la configuration"}
       </button>
-      {#if genConfigSaved}<span class="ok" style="font-size:0.88rem; align-self:center;">Config saved.</span>{/if}
+      {#if genConfigSaved}<span class="ok" style="font-size:0.88rem; align-self:center;">Configuration enregistrée.</span>{/if}
     </div>
 
     <div class="gen-divider"></div>
 
     <div class="actions">
       <button type="button" on:click={runGeneration} disabled={generationLoading}>
-        {generationLoading ? `Generating... ${genElapsed}s` : "Generate"}
+        {generationLoading ? `Génération... ${genElapsed}s` : "Générer"}
       </button>
       {#if generationResult && !generationLoading}
         <button type="button" class="secondary" on:click={runGeneration} disabled={generationLoading}>
-          Regenerate
+          Régénérer
         </button>
       {/if}
     </div>
     <p class="muted">
       {generationLoading
-        ? "The app is active — generation is running in background."
-        : "Generation can take 30–120 s depending on model size and hardware."}
+        ? "L'application est active — la génération fonctionne en arrière-plan."
+        : "La génération peut prendre 30–120 s selon la taille du modèle et le matériel."}
     </p>
 
     {#if generationError}<p class="ko">{generationError}</p>{/if}
@@ -207,19 +207,19 @@
     {#if generationResult}
       <div class="preview-dual">
         <div class="preview-dual-pane">
-          <h4>Journal entry</h4>
+          <h4>Entrée journal</h4>
           <pre>{generationResult.journal ?? ""}</pre>
         </div>
         <div class="preview-dual-pane">
-          <h4>Social post</h4>
+          <h4>Post social</h4>
           <pre>{generationResult.post ?? ""}</pre>
         </div>
       </div>
-      <p class="muted gen-meta">Generated by {generationResult.provider} / {generationResult.model}</p>
+      <p class="muted gen-meta">Généré par {generationResult.provider} / {generationResult.model}</p>
     {/if}
 
     {#if generationHistory.length > 0}
-      <h4>Recent generations ({generationHistory.length})</h4>
+      <h4>Générations récentes ({generationHistory.length})</h4>
       <ul class="gen-history">
         {#each generationHistory as entry, i}
           <li>

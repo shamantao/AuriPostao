@@ -100,15 +100,15 @@ export function formatGenerationError(
   aiBaseUrl: string,
   aiTimeout: number,
 ): string {
-  const base = `${errType}: ${errMsg ?? "unknown error"}`;
+  const base = `${errType}: ${errMsg ?? "erreur inconnue"}`;
   if (errMsg?.includes("timed out") || errMsg?.includes("Request timed out"))
-    return `${base} — Try a smaller model, or increase Timeout (current: ${aiTimeout}s).`;
+    return `${base} — Essayez un modèle plus léger ou augmentez le délai (actuel : ${aiTimeout}s).`;
   if (errMsg?.includes("404"))
-    return `${base} — Check Base URL and model name ("${aiModel}").`;
+    return `${base} — Vérifiez l'URL de base et le nom du modèle ("${aiModel}").`;
   if (errMsg?.includes("connect") || errMsg?.includes("unreachable"))
-    return `${base} — Is the provider running at ${aiBaseUrl}?`;
+    return `${base} — Le fournisseur est-il disponible sur ${aiBaseUrl} ?`;
   if (errMsg?.includes("HTTP 500"))
-    return `${base} — The provider returned an internal error (model loading or out of memory). AuriPostao retried 3x automatically.`;
+    return `${base} — Le fournisseur a retourné une erreur interne (chargement du modèle ou mémoire insuffisante). AuriPostao a réessayé 3 fois automatiquement.`;
   return base;
 }
 
